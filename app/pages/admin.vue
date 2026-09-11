@@ -1,0 +1,132 @@
+<script setup lang="ts">
+type Tab = 'festivals' | 'establishments' | 'tapas';
+
+const supabase = useSupabaseClient<any>() as any;
+const user = useSupabaseUser();
+const tab = ref<Tab>('festivals');
+const loading = ref(false);
+const checkingAccess = ref(false);
+const isAdmin = ref(false);
+const saving = ref(false);
+const error = ref('');
+const notice = ref('');
+const email = ref('');
+const password = ref('');
+const festivals = ref<any[]>([]);
+const establishments = ref<any[]>([]);
+const tapas = ref<any[]>([]);
+const editingFestival = ref<any | null>(null);
+const editingEstablishment = ref<any | null>(null);
+const editingTapa = ref<any | null>(null);
+
+const blankFestival = () => ({ name_en: '', name_es: '', slug: '', start_date: '', end_date: '', city: '', default_tapa_price: '5.00', publication_status: 'draft', reviews_enabled: true });
+const blankEstablishment = () => ({ festival_id: '', name: '', description_en: '', description_es: '', address: '', latitude: '', longitude: '', phone: '', whatsapp: '', facebook_url: '', website_url: '', hours_notes_en: '', hours_notes_es: '', is_published: false, participation_status: 'active', closure_status: 'normal' });
+const blankTapa = () => ({ establishment_id: '', name_en: '', name_es: '', description_en: '', description_es: '', price_override: '', festival_number: '', is_published: false, participation_status: 'active' });
+const festivalForm = ref(blankFestival());
+const establishmentForm = ref(blankEstablishment());
+const tapaForm = ref(blankTapa());
+
+const db = () => supabase.schema('festival');
+const valueOrNull = (value: string) => value.trim() || null;
+const numberOrNull = (value: string) => value === '' ? null : Number(value);
+
+async function load() {
+  if (!user.value) return;
+  loading.value = true;
+  error.value = '';
+  const [festivalResult, establishmentResult, tapaResult] = await Promise.all([
+    db().from('festivals').select('*').order('start_date', { ascending: false }),
+    db().from('establishments').select('*').order('name'),
+    db().from('tapas').select('*').order('festival_number', { ascending: true, nullsFirst: false }),
+  ]);
+  const firstError = festivalResult.error || establishmentResult.error || tapaResult.error;
+  if (firstError) error.value = firstError.message;
+  festivals.value = festivalResult.data || [];
+  establishments.value = establishmentResult.data || [];
+  tapas.value = tapaResult.data || [];
+  loading.value = false;
+}
+
+async function checkAccess() {
+  isAdmin.value = false;
+  if (!user.value) return;
+  checkingAccess.value = true;
+  error.value = '';
+  const { data, error: rpcError } = await db().rpc('is_current_admin');
+  if (rpcError) error.value = rpcError.message;
+  else isAdmin.value = data === true;
+  checkingAccess.value = false;
+  if (isAdmin.value) await load();
+}
+
+async function login() {
+  error.value = '';
+  const { error: authError } = await supabase.auth.signInWithPassword({ email: email.value, password: password.value });
+  if (authError) error.value = authError.message;
+}
+
+async function logout() { await supabase.auth.signOut(); }
+function resetFestival() { editingFestival.value = null; festivalForm.value = blankFestival(); }
+function resetEstablishment() { editingEstablishment.value = null; establishmentForm.value = blankEstablishment(); }
+function resetTapa() { editingTapa.value = null; tapaForm.value = blankTapa(); }
+function editFestival(row: any) { editingFestival.value = row; festivalForm.value = { ...row, default_tapa_price: String(row.default_tapa_price) }; tab.value = 'festivals'; }
+function editEstablishment(row: any) { editingEstablishment.value = row; establishmentForm.value = { ...blankEstablishment(), ...row, latitude: row.latitude == null ? '' : String(row.latitude), longitude: row.longitude == null ? '' : String(row.longitude) }; tab.value = 'establishments'; }
+function editTapa(row: any) { editingTapa.value = row; tapaForm.value = { ...blankTapa(), ...row, price_override: row.price_override == null ? '' : String(row.price_override), festival_number: row.festival_number == null ? '' : String(row.festival_number) }; tab.value = 'tapas'; }
+
+async function saveFestival() {
+  saving.value = true; error.value = ''; notice.value = '';
+  const payload = { ...festivalForm.value, name_es: valueOrNull(festivalForm.value.name_es), city: festivalForm.value.city.trim(), default_tapa_price: Number(festivalForm.value.default_tapa_price) };
+  const result = editingFestival.value ? await db().from('festivals').update(payload).eq('id', editingFestival.value.id) : await db().from('festivals').insert(payload);
+  saving.value = false;
+  if (result.error) error.value = result.error.message; else { notice.value = 'Festival saved.'; resetFestival(); await load(); }
+}
+async function saveEstablishment() {
+  saving.value = true; error.value = ''; notice.value = '';
+  const f = establishmentForm.value;
+  const payload = { ...f, description_en: valueOrNull(f.description_en), description_es: valueOrNull(f.description_es), address: valueOrNull(f.address), latitude: numberOrNull(f.latitude), longitude: numberOrNull(f.longitude), phone: valueOrNull(f.phone), whatsapp: valueOrNull(f.whatsapp), facebook_url: valueOrNull(f.facebook_url), website_url: valueOrNull(f.website_url), hours_notes_en: valueOrNull(f.hours_notes_en), hours_notes_es: valueOrNull(f.hours_notes_es) };
+  const result = editingEstablishment.value ? await db().from('establishments').update(payload).eq('id', editingEstablishment.value.id) : await db().from('establishments').insert(payload);
+  saving.value = false;
+  if (result.error) error.value = result.error.message; else { notice.value = 'Establishment saved.'; resetEstablishment(); await load(); }
+}
+async function saveTapa() {
+  saving.value = true; error.value = ''; notice.value = '';
+  const f = tapaForm.value;
+  const payload = { ...f, name_es: valueOrNull(f.name_es), description_en: valueOrNull(f.description_en), description_es: valueOrNull(f.description_es), price_override: numberOrNull(f.price_override), festival_number: numberOrNull(f.festival_number) };
+  const result = editingTapa.value ? await db().from('tapas').update(payload).eq('id', editingTapa.value.id) : await db().from('tapas').insert(payload);
+  saving.value = false;
+  if (result.error) error.value = result.error.message; else { notice.value = 'Tapa saved.'; resetTapa(); await load(); }
+}
+
+watch(user, checkAccess, { immediate: true });
+</script>
+
+<template>
+  <main class="min-h-screen bg-stone-50 p-5 text-stone-900 md:p-10">
+    <div class="mx-auto max-w-7xl">
+      <header class="mb-8 flex flex-wrap items-center justify-between gap-4">
+        <div><p class="text-sm font-semibold text-emerald-700">tapas-festival</p><h1 class="font-display text-3xl font-bold">Admin</h1></div>
+        <button v-if="user" class="rounded-lg border border-stone-300 px-3 py-2 text-sm" @click="logout">Log out</button>
+      </header>
+
+      <section v-if="!user" class="mx-auto max-w-md rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
+        <h2 class="text-xl font-bold">Admin login required</h2><p class="mt-1 text-sm text-stone-600">Sign in with an administrator account.</p>
+        <form class="mt-5 space-y-3" @submit.prevent="login"><input v-model="email" class="w-full rounded border p-2" type="email" placeholder="Email" required><input v-model="password" class="w-full rounded border p-2" type="password" placeholder="Password" required><button class="w-full rounded bg-emerald-700 px-3 py-2 font-semibold text-white">Log in</button></form>
+      </section>
+
+      <section v-else-if="checkingAccess" class="rounded-xl border border-stone-200 bg-white p-6 text-sm text-stone-600">Checking administrator access…</section>
+      <section v-else-if="!isAdmin" class="rounded-xl border border-red-200 bg-red-50 p-6"><h2 class="text-xl font-bold text-red-900">Access denied</h2><p class="mt-1 text-sm text-red-800">This account is not an administrator.</p></section>
+      <template v-else>
+        <p v-if="error" class="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{{ error }}</p>
+        <p v-if="notice" class="mb-4 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{{ notice }}</p>
+        <nav class="mb-6 flex gap-2 border-b border-stone-200"><button v-for="item in ['festivals','establishments','tapas'] as Tab[]" :key="item" class="border-b-2 px-4 py-3 text-sm font-semibold capitalize" :class="tab === item ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="tab=item">{{ item }}</button></nav>
+        <p v-if="loading" class="text-sm text-stone-500">Loading…</p>
+
+        <section v-if="tab === 'festivals'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]"><div><h2 class="mb-3 text-xl font-bold">Festivals</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Dates</th><th class="p-3">Status</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in festivals" :key="row.id" class="border-t"><td class="p-3">{{ row.name_en || row.name_es }}</td><td class="p-3">{{ row.start_date }} – {{ row.end_date }}</td><td class="p-3">{{ row.publication_status }}</td><td class="p-3"><button class="text-emerald-700" @click="editFestival(row)">Edit</button></td></tr></tbody></table></div></div><form class="space-y-3 rounded-xl border bg-white p-5" @submit.prevent="saveFestival"><h2 class="text-lg font-bold">{{ editingFestival ? 'Edit festival' : 'New festival' }}</h2><input v-model="festivalForm.name_en" class="w-full rounded border p-2" placeholder="English name" required><input v-model="festivalForm.name_es" class="w-full rounded border p-2" placeholder="Spanish name"><input v-model="festivalForm.slug" class="w-full rounded border p-2" placeholder="slug" required><div class="grid grid-cols-2 gap-2"><input v-model="festivalForm.start_date" class="rounded border p-2" type="date" required><input v-model="festivalForm.end_date" class="rounded border p-2" type="date" required></div><input v-model="festivalForm.city" class="w-full rounded border p-2" placeholder="City" required><input v-model="festivalForm.default_tapa_price" class="w-full rounded border p-2" type="number" min="0" step="0.01" placeholder="Default price" required><select v-model="festivalForm.publication_status" class="w-full rounded border p-2"><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select><label class="flex gap-2 text-sm"><input v-model="festivalForm.reviews_enabled" type="checkbox"> Reviews enabled</label><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetFestival">Clear</button></div></form></section>
+
+        <section v-if="tab === 'establishments'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]"><div><h2 class="mb-3 text-xl font-bold">Establishments</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Festival</th><th class="p-3">Status</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in establishments" :key="row.id" class="border-t"><td class="p-3">{{ row.name }}</td><td class="p-3">{{ festivals.find(f => f.id === row.festival_id)?.name_en || '—' }}</td><td class="p-3">{{ row.participation_status }}</td><td class="p-3"><button class="text-emerald-700" @click="editEstablishment(row)">Edit</button></td></tr></tbody></table></div></div><form class="space-y-3 rounded-xl border bg-white p-5" @submit.prevent="saveEstablishment"><h2 class="text-lg font-bold">{{ editingEstablishment ? 'Edit establishment' : 'New establishment' }}</h2><select v-model="establishmentForm.festival_id" class="w-full rounded border p-2" required><option value="" disabled>Festival</option><option v-for="f in festivals" :key="f.id" :value="f.id">{{ f.name_en || f.name_es }}</option></select><input v-model="establishmentForm.name" class="w-full rounded border p-2" placeholder="Name" required><textarea v-model="establishmentForm.description_en" class="w-full rounded border p-2" placeholder="English description"/><textarea v-model="establishmentForm.description_es" class="w-full rounded border p-2" placeholder="Spanish description"/><input v-model="establishmentForm.address" class="w-full rounded border p-2" placeholder="Address"><div class="grid grid-cols-2 gap-2"><input v-model="establishmentForm.latitude" class="rounded border p-2" type="number" step="any" placeholder="Latitude"><input v-model="establishmentForm.longitude" class="rounded border p-2" type="number" step="any" placeholder="Longitude"></div><input v-model="establishmentForm.phone" class="w-full rounded border p-2" placeholder="Phone"><input v-model="establishmentForm.whatsapp" class="w-full rounded border p-2" placeholder="WhatsApp"><input v-model="establishmentForm.facebook_url" class="w-full rounded border p-2" placeholder="Facebook URL"><input v-model="establishmentForm.website_url" class="w-full rounded border p-2" placeholder="Website"><textarea v-model="establishmentForm.hours_notes_en" class="w-full rounded border p-2" placeholder="Opening-hours notes (English)"/><textarea v-model="establishmentForm.hours_notes_es" class="w-full rounded border p-2" placeholder="Opening-hours notes (Spanish)"/><label class="flex gap-2 text-sm"><input v-model="establishmentForm.is_published" type="checkbox"> Published</label><select v-model="establishmentForm.participation_status" class="w-full rounded border p-2"><option value="active">Active</option><option value="withdrawn">Withdrawn</option></select><select v-model="establishmentForm.closure_status" class="w-full rounded border p-2"><option value="normal">Normal</option><option value="temporarily_closed">Temporarily closed</option><option value="permanently_closed">Permanently closed</option></select><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetEstablishment">Clear</button></div></form></section>
+
+        <section v-if="tab === 'tapas'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]"><div><h2 class="mb-3 text-xl font-bold">Tapas</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Establishment</th><th class="p-3">Price</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in tapas" :key="row.id" class="border-t"><td class="p-3">{{ row.name_en || row.name_es }}</td><td class="p-3">{{ establishments.find(e => e.id === row.establishment_id)?.name || '—' }}</td><td class="p-3">{{ row.price_override ?? festivals.find(f => f.id === establishments.find(e => e.id === row.establishment_id)?.festival_id)?.default_tapa_price ?? '—' }}</td><td class="p-3"><button class="text-emerald-700" @click="editTapa(row)">Edit</button></td></tr></tbody></table></div></div><form class="space-y-3 rounded-xl border bg-white p-5" @submit.prevent="saveTapa"><h2 class="text-lg font-bold">{{ editingTapa ? 'Edit tapa' : 'New tapa' }}</h2><select v-model="tapaForm.establishment_id" class="w-full rounded border p-2" required><option value="" disabled>Establishment</option><option v-for="e in establishments" :key="e.id" :value="e.id">{{ e.name }}</option></select><input v-model="tapaForm.name_en" class="w-full rounded border p-2" placeholder="English name" required><input v-model="tapaForm.name_es" class="w-full rounded border p-2" placeholder="Spanish name"><textarea v-model="tapaForm.description_en" class="w-full rounded border p-2" placeholder="English description"/><textarea v-model="tapaForm.description_es" class="w-full rounded border p-2" placeholder="Spanish description"/><input v-model="tapaForm.price_override" class="w-full rounded border p-2" type="number" min="0" step="0.01" placeholder="Price override"><input v-model="tapaForm.festival_number" class="w-full rounded border p-2" type="number" min="0" placeholder="Programme number"><label class="flex gap-2 text-sm"><input v-model="tapaForm.is_published" type="checkbox"> Published</label><select v-model="tapaForm.participation_status" class="w-full rounded border p-2"><option value="active">Active</option><option value="withdrawn">Withdrawn</option></select><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetTapa">Clear</button></div></form></section>
+      </template>
+    </div>
+  </main>
+</template>
