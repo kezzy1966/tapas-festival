@@ -6,6 +6,7 @@ type Stats = { tapa_id: string; rating_count: number; average_rating: number | n
 
 const supabase = useSupabaseClient<any>() as any;
 const user = useSupabaseUser();
+const currentUserId = computed(() => typeof user.value?.sub === 'string' ? user.value.sub : null);
 const loading = ref(true);
 const ratingBusy = ref<string | null>(null);
 const error = ref('');
@@ -56,8 +57,8 @@ async function loadStats() {
 }
 async function loadMyReviews() {
   myReviews.value = {};
-  if (!user.value || !tapas.value.length) return;
-  const { data, error: reviewError } = await db().from('reviews').select('id,tapa_id,rating').in('tapa_id', tapas.value.map((tapa) => tapa.id)).eq('user_id', user.value.id);
+  if (!currentUserId.value || !tapas.value.length) return;
+  const { data, error: reviewError } = await db().from('reviews').select('id,tapa_id,rating').in('tapa_id', tapas.value.map((tapa) => tapa.id)).eq('user_id', currentUserId.value);
   if (reviewError) { ratingError.value = reviewError.message; return; }
   myReviews.value = Object.fromEntries((data || []).map((review: any) => [review.tapa_id, review]));
 }
@@ -79,19 +80,19 @@ async function loadFestival() {
   loading.value = false;
 }
 async function rate(tapa: Tapa, rating: number) {
-  if (!user.value) { ratingError.value = 'Sign in at /admin to rate this tapa.'; return; }
+  if (!currentUserId.value) { ratingError.value = 'Sign in at /admin to rate this tapa.'; return; }
   ratingBusy.value = tapa.id; ratingError.value = '';
   const existing = myReviews.value[tapa.id];
   const result = existing
     ? await db().from('reviews').update({ rating }).eq('id', existing.id)
-    : await db().from('reviews').insert({ tapa_id: tapa.id, user_id: user.value.id, rating });
+    : await db().from('reviews').insert({ tapa_id: tapa.id, user_id: currentUserId.value, rating });
   ratingBusy.value = null;
   if (result.error) { ratingError.value = result.error.message; return; }
   await Promise.all([loadStats(), loadMyReviews()]);
 }
 async function removeRating(tapa: Tapa) {
   const existing = myReviews.value[tapa.id];
-  if (!existing) return;
+  if (!currentUserId.value || !existing) return;
   ratingBusy.value = tapa.id; ratingError.value = '';
   const { error: deleteError } = await db().from('reviews').delete().eq('id', existing.id);
   ratingBusy.value = null;
