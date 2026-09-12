@@ -33,6 +33,8 @@ const bearing = ref(0);
 
 const tiles = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 const attribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+const festivalBounds = L.latLngBounds([39.94, -0.12], [40.04, 0.04]);
+const nearbyFestivalBounds = festivalBounds.pad(0.2);
 const { language, t, localized } = useFestivalLanguage();
 const weekdays = computed(() => language.value === 'es' ? ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'] : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']);
 
@@ -40,6 +42,9 @@ const mappableCount = () => props.establishments.filter(hasCoordinates).length;
 
 function hasCoordinates(venue: Establishment) {
   return Number.isFinite(Number(venue.latitude)) && Number.isFinite(Number(venue.longitude));
+}
+function isNearFestivalArea(point: L.LatLng) {
+  return nearbyFestivalBounds.contains(point);
 }
 function escapeHtml(value: unknown) {
   return String(value ?? '')
@@ -126,7 +131,7 @@ function focusSelectedVenue() {
   selectedMarker = L.marker(point, { icon: selectedVenueIcon, title: venue.name, zIndexOffset: 1000 })
     .addTo(map)
     .bindPopup(popupHtml(venue), { className: 'festival-map-popup', maxWidth: 320 });
-  if (userMarker) {
+  if (userMarker && isNearFestivalArea(userMarker.getLatLng())) {
     map.fitBounds(L.latLngBounds([point, userMarker.getLatLng()]), { padding: [56, 56], maxZoom: 15 });
   } else {
     map.setView(point, Math.max(map.getZoom(), 15));
@@ -205,7 +210,10 @@ function startLocationTracking() {
     if (firstLocation && props.selectedEstablishmentId) {
       focusSelectedVenue();
       locationHasCentered = true;
-    } else if (!locationHasCentered) { map!.setView(point, Math.max(map!.getZoom(), 15)); locationHasCentered = true; }
+    } else if (!locationHasCentered) {
+      if (isNearFestivalArea(userMarker!.getLatLng())) map!.setView(point, Math.max(map!.getZoom(), 15));
+      locationHasCentered = true;
+    }
   }, () => { locationUnavailable.value = true; stopLocationTracking(); }, { enableHighAccuracy: true, maximumAge: 15000, timeout: 10000 });
 }
 function updateMarkers(fitToAll = true) {
@@ -227,8 +235,8 @@ onMounted(async () => {
   if (!mapContainer.value) return;
   (window as Window & { L?: typeof L }).L = L;
   await import('leaflet-rotate');
-  map = L.map(mapContainer.value, { scrollWheelZoom: false, rotate: true, rotateControl: false, touchRotate: false, shiftKeyRotate: false });
-  L.tileLayer(tiles, { attribution, maxZoom: 19 }).addTo(map);
+  map = L.map(mapContainer.value, { scrollWheelZoom: false, rotate: true, rotateControl: false, touchRotate: false, shiftKeyRotate: false, minZoom: 11, maxBounds: festivalBounds, maxBoundsViscosity: 1 });
+  L.tileLayer(tiles, { attribution, maxZoom: 19, bounds: festivalBounds, noWrap: true }).addTo(map);
   addRotationControl();
   markers = L.markerClusterGroup({ chunkedLoading: true, maxClusterRadius: 48, showCoverageOnHover: false, iconCreateFunction: clusterIcon });
   map.addLayer(markers);
