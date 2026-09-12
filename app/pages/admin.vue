@@ -12,6 +12,8 @@ const error = ref('');
 const notice = ref('');
 const email = ref('');
 const password = ref('');
+const authMode = ref<'login' | 'signup'>('login');
+const authBusy = ref(false);
 const festivals = ref<any[]>([]);
 const establishments = ref<any[]>([]);
 const tapas = ref<any[]>([]);
@@ -59,11 +61,35 @@ async function checkAccess() {
   if (isAdmin.value) await load();
 }
 
+function validateCredentials() {
+  const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value.trim());
+  if (!validEmail) { error.value = 'Enter a valid email address.'; return false; }
+  if (password.value.length < 8) { error.value = 'Password must be at least 8 characters.'; return false; }
+  return true;
+}
+
 async function login() {
-  error.value = '';
-  const { error: authError } = await supabase.auth.signInWithPassword({ email: email.value, password: password.value });
+  error.value = ''; notice.value = '';
+  if (!validateCredentials()) return;
+  authBusy.value = true;
+  const { error: authError } = await supabase.auth.signInWithPassword({ email: email.value.trim(), password: password.value });
+  authBusy.value = false;
   if (authError) error.value = authError.message;
 }
+
+async function signup() {
+  error.value = ''; notice.value = '';
+  if (!validateCredentials()) return;
+  authBusy.value = true;
+  const { data, error: authError } = await supabase.auth.signUp({ email: email.value.trim(), password: password.value });
+  authBusy.value = false;
+  if (authError) { error.value = authError.message; return; }
+  notice.value = data.session
+    ? 'Account created and signed in. This account still needs administrator appointment before it can manage festival data.'
+    : 'Account created. Check your email to confirm the account, then sign in. This account still needs administrator appointment before it can manage festival data.';
+  password.value = '';
+}
+
 
 async function logout() { await supabase.auth.signOut(); }
 function resetFestival() { editingFestival.value = null; festivalForm.value = blankFestival(); }
@@ -109,8 +135,10 @@ watch(user, checkAccess, { immediate: true });
       </header>
 
       <section v-if="!user" class="mx-auto max-w-md rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
-        <h2 class="text-xl font-bold">Admin login required</h2><p class="mt-1 text-sm text-stone-600">Sign in with an administrator account.</p>
-        <form class="mt-5 space-y-3" @submit.prevent="login"><input v-model="email" class="w-full rounded border p-2" type="email" placeholder="Email" required><input v-model="password" class="w-full rounded border p-2" type="password" placeholder="Password" required><button class="w-full rounded bg-emerald-700 px-3 py-2 font-semibold text-white">Log in</button></form>
+        <h2 class="text-xl font-bold">Admin access</h2><p class="mt-1 text-sm text-stone-600">Sign in, or create the first development account.</p>
+        <div class="mt-4 flex gap-2 border-b border-stone-200"><button type="button" class="border-b-2 px-3 py-2 text-sm font-semibold" :class="authMode === 'login' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="authMode = 'login'; error = ''; notice = ''">Sign in</button><button type="button" class="border-b-2 px-3 py-2 text-sm font-semibold" :class="authMode === 'signup' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="authMode = 'signup'; error = ''; notice = ''">Create account</button></div>
+        <p v-if="error" class="mt-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{{ error }}</p><p v-if="notice" class="mt-4 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{{ notice }}</p>
+        <form class="mt-5 space-y-3" @submit.prevent="authMode === 'login' ? login() : signup()"><input v-model="email" class="w-full rounded border p-2" type="email" autocomplete="email" placeholder="Email" required><input v-model="password" class="w-full rounded border p-2" type="password" autocomplete="current-password" placeholder="Password (8+ characters)" minlength="8" required><button class="w-full rounded bg-emerald-700 px-3 py-2 font-semibold text-white disabled:opacity-50" :disabled="authBusy">{{ authBusy ? 'Please wait…' : authMode === 'login' ? 'Log in' : 'Create account' }}</button></form>
       </section>
 
       <section v-else-if="checkingAccess" class="rounded-xl border border-stone-200 bg-white p-6 text-sm text-stone-600">Checking administrator access…</section>
