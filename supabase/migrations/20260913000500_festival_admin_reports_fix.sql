@@ -1,0 +1,5 @@
+-- Historical migration placeholder.
+-- This migration was previously applied to the hosted Supabase project.
+-- Its final changes have since been consolidated into
+-- 20260913000400_festival_admin_reports.sql for clean fresh installs.
+-- Intentionally no-op.

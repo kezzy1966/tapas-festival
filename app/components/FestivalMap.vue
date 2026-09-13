@@ -14,7 +14,7 @@ const props = defineProps<{
   establishments: Establishment[];
   tapas: Tapa[];
   stats: Record<string, RatingStat>;
-  myReviews: Record<string, { id: string; rating: number }>;
+  myReviews: Record<string, { id: string; rating: number | null }>;
   locationActive: boolean;
   selectedEstablishmentId: string | null;
   wantedTapas: Record<string, boolean>;
@@ -143,7 +143,7 @@ function attachPopupTapaHandlers(popup: L.Popup) {
 }
 function venueReviewProgress(venueId: string) {
   const eligibleTapas = props.tapas.filter((tapa) => tapa.establishment_id === venueId && tapa.is_published && tapa.participation_status === 'active');
-  const reviewedCount = eligibleTapas.filter((tapa) => Boolean(props.myReviews[tapa.id])).length;
+  const reviewedCount = eligibleTapas.filter((tapa) => props.myReviews[tapa.id]?.rating != null).length;
   return { reviewedCount, total: eligibleTapas.length, ratio: eligibleTapas.length ? reviewedCount / eligibleTapas.length : 0 };
 }
 function venueHasRatedTapa(venueId: string) {

@@ -23,8 +23,8 @@ const festival = ref<Festival | null>(null);
 const establishments = ref<Establishment[]>([]);
 const tapas = ref<Tapa[]>([]);
 const stats = ref<Record<string, Stats>>({});
-type MyReview = { id: string; rating: number; review_text: string | null };
-type PublicReview = { id: string; tapa_id: string; rating: number; review_text: string; created_at: string };
+type MyReview = { id: string; rating: number | null; review_text: string | null };
+type PublicReview = { id: string; tapa_id: string; rating: number | null; review_text: string; created_at: string };
 type EstablishmentStats = { establishment_id: string; rating_count: number; average_rating: number | null };
 type MyEstablishmentReview = { id: string; rating: number };
 const establishmentStats = ref<Record<string, EstablishmentStats>>({});
@@ -55,6 +55,10 @@ const authPassword = ref('');
 const authBusy = ref(false);
 const authError = ref('');
 const authNotice = ref('');
+const unsavedReviewDialogOpen = ref(false);
+const pendingReviewAction = ref<(() => void | Promise<void>) | null>(null);
+const pendingRoute = ref<any>(null);
+const allowNextRoute = ref(false);
 
 const wantedTapaStorageKey = (tapaId: string) => `tapas-festival:wanted-tapa:${tapaId}`;
 const wantsToTry = (tapaId: string) => Boolean(wantedTapas.value[tapaId]);
@@ -100,7 +104,7 @@ function programmeNumberFor(venue: Establishment) {
 }
 function hasNoStarsYet(venue: Establishment) {
   const eligible = tapasFor(venue.id).filter((tapa) => tapa.is_published && tapa.participation_status === 'active');
-  return eligible.length > 0 && !eligible.some((tapa) => myReviews.value[tapa.id]);
+  return eligible.length > 0 && !eligible.some((tapa) => myReviews.value[tapa.id]?.rating != null);
 }
 const sortedEstablishments = computed(() => [...establishments.value].sort((a, b) => {
   if (barSort.value === 'alphabetical') return String(a.name).replace(/^\s*\d+\.\s*/, '').localeCompare(String(b.name).replace(/^\s*\d+\.\s*/, ''), undefined, { sensitivity: 'base' });
@@ -153,12 +157,12 @@ function openingHourRows(hours: unknown) {
 }
 const expandedOpeningHours = ref<Record<string, boolean>>({});
 function toggleEstablishment(id: string) {
-  expandedEstablishments.value[id] = !expandedEstablishments.value[id];
+  requestReviewGuard(() => { expandedEstablishments.value[id] = !expandedEstablishments.value[id]; });
 }
 function toggleOpeningHours(id: string) {
   expandedOpeningHours.value[id] = !expandedOpeningHours.value[id];
 }
-async function revealEstablishmentFromMap(establishmentId: string) {
+async function revealEstablishment(establishmentId: string) {
   expandedEstablishments.value[establishmentId] = true;
   await nextTick();
   const pane = establishmentsPane.value;
@@ -171,11 +175,11 @@ async function revealEstablishmentFromMap(establishmentId: string) {
     }
   }
 }
-async function revealTapaFromRanking(tapa: Tapa) {
-  await revealTapaFromMap(tapa.id, tapa.establishment_id);
+async function revealEstablishmentFromMap(establishmentId: string) {
+  requestReviewGuard(() => revealEstablishment(establishmentId));
 }
-async function revealTapaFromMap(tapaId: string, establishmentId: string) {
-  expandedEstablishments.value[establishmentId] = true;
+async function revealTapa(tapaId: string, establishmentId: string) {
+  await revealEstablishment(establishmentId);
   highlightedTapaId.value = tapaId;
   await nextTick();
   const pane = establishmentsPane.value;
@@ -188,6 +192,12 @@ async function revealTapaFromMap(tapaId: string, establishmentId: string) {
     }
   }
   window.setTimeout(() => { if (highlightedTapaId.value === tapaId) highlightedTapaId.value = null; }, 2200);
+}
+async function revealTapaFromRanking(tapa: Tapa) {
+  requestReviewGuard(() => revealTapa(tapa.id, tapa.establishment_id));
+}
+async function revealTapaFromMap(tapaId: string, establishmentId: string) {
+  requestReviewGuard(() => revealTapa(tapaId, establishmentId));
 }
 
 function summaryFor(tapaId: string) { return stats.value[tapaId] || { rating_count: 0, average_rating: null, good_excellent_percentage: null }; }
@@ -223,7 +233,7 @@ async function loadMyReviews() {
   if (reviewError) { ratingError.value = reviewError.message; return; }
   myReviews.value = Object.fromEntries((data || []).map((review: MyReview & { tapa_id: string }) => [review.tapa_id, review]));
   reviewDrafts.value = Object.fromEntries((data || []).map((review: MyReview & { tapa_id: string }) => [review.tapa_id, review.review_text || '']));
-  tapaRatingDrafts.value = Object.fromEntries((data || []).map((review: MyReview & { tapa_id: string }) => [review.tapa_id, Number(review.rating)]));
+  tapaRatingDrafts.value = Object.fromEntries((data || []).filter((review: MyReview) => review.rating != null).map((review: MyReview & { tapa_id: string }) => [review.tapa_id, Number(review.rating)]));
 }
 async function loadPublicReviews() {
   publicReviews.value = {};
@@ -272,17 +282,15 @@ async function rate(tapa: Tapa, rating: number) {
   if (!currentUserId.value) { ratingError.value = t('signInAtAdmin'); return; }
   const existing = myReviews.value[tapa.id];
   const confirmedRating = existing?.rating;
-  const draft = reviewDrafts.value[tapa.id] || '';
-  if (draft.length > maxReviewLength) { ratingError.value = t('reviewTooLong'); return; }
+  // Numeric ratings save independently from written review drafts.
 
   // Keep the slider on the selected value until the mutation confirms it.
   tapaRatingDrafts.value[tapa.id] = rating;
   ratingBusy.value = tapa.id;
   ratingError.value = '';
-  const review_text = valueOrNull(draft);
   const result = existing
-    ? await db().from('reviews').update({ rating, review_text }).eq('id', existing.id).select('id,tapa_id,rating,review_text').single()
-    : await db().from('reviews').insert({ tapa_id: tapa.id, user_id: currentUserId.value, rating, review_text }).select('id,tapa_id,rating,review_text').single();
+    ? await db().from('reviews').update({ rating }).eq('id', existing.id).select('id,tapa_id,rating,review_text').single()
+    : await db().from('reviews').insert({ tapa_id: tapa.id, user_id: currentUserId.value, rating }).select('id,tapa_id,rating,review_text').single();
   ratingBusy.value = null;
   if (result.error || !result.data) {
     ratingError.value = result.error?.message || 'Unable to save rating.';
@@ -294,7 +302,7 @@ async function rate(tapa: Tapa, rating: number) {
   const saved = result.data as MyReview & { tapa_id: string };
   myReviews.value = { ...myReviews.value, [tapa.id]: saved };
   tapaRatingDrafts.value[tapa.id] = Number(saved.rating);
-  reviewDrafts.value[tapa.id] = saved.review_text || draft;
+  // Preserve any unsaved textarea edit; only the explicit Save review action changes it.
   // Refresh aggregate/public data only; do not reload this user's just-confirmed slider state.
   await Promise.all([loadStats(), loadEstablishmentStats(), loadMyEstablishmentReviews(), loadPublicReviews()]);
 }
@@ -336,19 +344,72 @@ function submitProblemReport() {
   window.location.href = `mailto:?subject=${encodeURIComponent(`Tapas festival problem: ${festival.value?.slug || ''}`)}&body=${encodeURIComponent(context)}`;
   reportOpen.value = false;
 }
-async function saveReview(tapa: Tapa) {
+async function saveReview(tapa: Tapa): Promise<boolean> {
   const existing = myReviews.value[tapa.id];
-  if (!currentUserId.value) { ratingError.value = t('signInAtAdmin'); return; }
-  if (!existing) { ratingError.value = t('chooseRatingFirst'); return; }
+  if (!currentUserId.value) { ratingError.value = t('signInAtAdmin'); return false; }
+  if (!existing) { ratingError.value = t('chooseRatingFirst'); return false; }
   const draft = reviewDrafts.value[tapa.id] || '';
-  if (draft.length > maxReviewLength) { ratingError.value = t('reviewTooLong'); return; }
+  if (draft.length > maxReviewLength) { ratingError.value = t('reviewTooLong'); return false; }
   ratingBusy.value = tapa.id; ratingError.value = ''; reviewNotice.value = '';
-  const { error: reviewError } = await db().from('reviews').update({ review_text: valueOrNull(draft) }).eq('id', existing.id);
+  const result = await db().from('reviews').update({ review_text: valueOrNull(draft) }).eq('id', existing.id).select('id,tapa_id,rating,review_text').single();
   ratingBusy.value = null;
-  if (reviewError) { ratingError.value = reviewError.message; return; }
+  if (result.error || !result.data) { ratingError.value = result.error?.message || 'Unable to save review.'; return false; }
+  const saved = result.data as MyReview & { tapa_id: string };
+  myReviews.value = { ...myReviews.value, [tapa.id]: saved };
+  reviewDrafts.value[tapa.id] = saved.review_text || '';
   reviewNotice.value = t('reviewSaved');
-  await Promise.all([loadMyReviews(), loadPublicReviews()]);
+  await loadPublicReviews();
+  return true;
 }
+const unsavedReviewTapaId = computed(() => Object.keys(reviewDrafts.value).find((tapaId) =>
+  (reviewDrafts.value[tapaId] || '') !== (myReviews.value[tapaId]?.review_text || ''),
+) || null);
+const hasUnsavedReview = computed(() => unsavedReviewTapaId.value != null);
+function requestReviewGuard(action: () => void | Promise<void>) {
+  if (!hasUnsavedReview.value) { void action(); return; }
+  pendingReviewAction.value = action;
+  unsavedReviewDialogOpen.value = true;
+}
+async function continuePendingReviewAction() {
+  const action = pendingReviewAction.value;
+  pendingReviewAction.value = null;
+  unsavedReviewDialogOpen.value = false;
+  if (action) await action();
+}
+async function saveUnsavedReviewAndContinue() {
+  const tapaId = unsavedReviewTapaId.value;
+  const tapa = tapas.value.find((item) => item.id === tapaId);
+  if (!tapa || !(await saveReview(tapa))) return;
+  await continuePendingReviewAction();
+}
+async function discardUnsavedReviewAndContinue() {
+  const tapaId = unsavedReviewTapaId.value;
+  if (tapaId) reviewDrafts.value[tapaId] = myReviews.value[tapaId]?.review_text || '';
+  await continuePendingReviewAction();
+}
+function stayWithUnsavedReview() {
+  pendingReviewAction.value = null;
+  pendingRoute.value = null;
+  unsavedReviewDialogOpen.value = false;
+}
+function onBeforeUnload(event: BeforeUnloadEvent) {
+  if (!hasUnsavedReview.value) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+const router = useRouter();
+onBeforeRouteLeave((to) => {
+  if (allowNextRoute.value) { allowNextRoute.value = false; return true; }
+  if (!hasUnsavedReview.value) return true;
+  pendingRoute.value = to;
+  requestReviewGuard(async () => {
+    const target = pendingRoute.value;
+    pendingRoute.value = null;
+    if (target) { allowNextRoute.value = true; await router.push(target); }
+  });
+  return false;
+});
+
 function openAuth(mode: 'signin' | 'signup') {
   authMode.value = mode;
   authError.value = '';
@@ -394,20 +455,55 @@ async function logout() {
 }
 async function removeRating(tapa: Tapa) {
   const existing = myReviews.value[tapa.id];
-  if (!currentUserId.value || !existing) return;
+  if (!currentUserId.value || !existing || existing.rating == null) return;
   ratingBusy.value = tapa.id; ratingError.value = '';
-  const { error: deleteError } = await db().from('reviews').delete().eq('id', existing.id);
+  const keepsReview = Boolean(existing.review_text?.trim());
+  const result = keepsReview
+    ? await db().from('reviews').update({ rating: null }).eq('id', existing.id).select('id,tapa_id,rating,review_text').single()
+    : await db().from('reviews').delete().eq('id', existing.id);
   ratingBusy.value = null;
-  if (deleteError) { ratingError.value = deleteError.message; return; }
-  loadWantedTapas();
-  await Promise.all([loadStats(), loadEstablishmentStats(), loadMyReviews(), loadMyEstablishmentReviews(), loadPublicReviews()]);
+  if (result.error) { ratingError.value = result.error.message; return; }
+  delete tapaRatingDrafts.value[tapa.id];
+  if (keepsReview && result.data) {
+    const saved = result.data as MyReview & { tapa_id: string };
+    myReviews.value = { ...myReviews.value, [tapa.id]: saved };
+    reviewDrafts.value[tapa.id] = saved.review_text || '';
+  } else {
+    const next = { ...myReviews.value }; delete next[tapa.id]; myReviews.value = next;
+    delete reviewDrafts.value[tapa.id];
+  }
+  await Promise.all([loadStats(), loadPublicReviews()]);
+}
+async function removeReview(tapa: Tapa) {
+  const existing = myReviews.value[tapa.id];
+  if (!currentUserId.value || !existing || !existing.review_text?.trim()) return;
+  ratingBusy.value = tapa.id; ratingError.value = ''; reviewNotice.value = '';
+  const keepsRating = existing.rating != null;
+  const result = keepsRating
+    ? await db().from('reviews').update({ review_text: null }).eq('id', existing.id).select('id,tapa_id,rating,review_text').single()
+    : await db().from('reviews').delete().eq('id', existing.id);
+  ratingBusy.value = null;
+  if (result.error) { ratingError.value = result.error.message; return; }
+  reviewDrafts.value[tapa.id] = '';
+  if (keepsRating && result.data) {
+    const saved = result.data as MyReview & { tapa_id: string };
+    myReviews.value = { ...myReviews.value, [tapa.id]: saved };
+  } else {
+    const next = { ...myReviews.value }; delete next[tapa.id]; myReviews.value = next;
+    delete tapaRatingDrafts.value[tapa.id];
+  }
+  await loadPublicReviews();
 }
 
 watch(user, () => {
   if (!user.value && barSort.value === 'unreviewed') barSort.value = 'numeric';
   void Promise.all([loadMyReviews(), loadMyEstablishmentReviews()]);
 });
-onMounted(loadFestival);
+onMounted(() => {
+  window.addEventListener('beforeunload', onBeforeUnload);
+  void loadFestival();
+});
+onUnmounted(() => window.removeEventListener('beforeunload', onBeforeUnload));
 </script>
 
 <template>
@@ -434,7 +530,7 @@ onMounted(loadFestival);
           <div ref="establishmentsPane" class="sticky top-2 h-[calc(100vh-1rem)] overflow-y-auto pr-1 sm:top-4 sm:h-[calc(100vh-2rem)] sm:pr-2">
         <p v-if="ratingError" class="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{{ ratingError }}</p><p v-if="reviewNotice" class="mb-4 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{{ reviewNotice }}</p>
         <div class="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-stone-200 bg-white p-2 text-xs sm:mb-4"><label class="font-semibold text-stone-700" for="bar-sort">{{ t('sortBars') }}</label><select id="bar-sort" v-model="barSort" class="rounded border border-stone-300 bg-white px-2 py-1.5" @change="barSort === 'unreviewed' && !user ? (barSort = 'numeric') : undefined"><option value="numeric">{{ t('numeric') }}</option><option value="alphabetical">{{ t('alphabetical') }}</option><option value="unreviewed" :disabled="!user">{{ t('notReviewedYet') }}</option></select><span v-if="!user" class="text-stone-500">{{ t('signInToSort') }}</span></div>
-        <div class="space-y-3 pb-24 sm:space-y-6 sm:pb-32"><article :id="`festival-establishment-${venue.id}`" v-for="venue in sortedEstablishments" :key="venue.id" class="rounded-xl border border-stone-200 bg-white shadow-sm"><button type="button" class="flex w-full items-center justify-between gap-2 p-3 text-left sm:p-5" :aria-expanded="Boolean(expandedEstablishments[venue.id])" @click="toggleEstablishment(venue.id)"><h2 class="font-display text-base font-bold sm:text-2xl">{{ venue.name }}</h2><span class="text-xl text-emerald-700 transition-transform sm:text-2xl" :class="expandedEstablishments[venue.id] ? 'rotate-180' : ''" aria-hidden="true">⌄</span></button><div v-if="expandedEstablishments[venue.id]" class="border-t border-stone-200 p-3 pt-3 sm:p-5 sm:pt-4"><p v-if="venue.participation_status === 'withdrawn'" class="mt-1 text-sm font-semibold text-red-700">{{ t('withdrawn') }}</p><p v-else-if="venue.closure_status !== 'normal'" class="mt-1 text-sm font-semibold text-stone-600">{{ closureLabel(venue.closure_status) }}</p><p v-if="text(venue.description_en, venue.description_es)" class="mt-3 text-stone-700">{{ text(venue.description_en, venue.description_es) }}</p><div class="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm"><div class="flex flex-wrap items-center gap-2"><p class="mr-auto font-bold text-emerald-950">{{ t('rateThisBar') }}</p><p class="text-xs text-stone-600"><strong>{{ t('barRating') }}</strong> {{ establishmentSummaryFor(venue.id).average_rating == null ? t('unrated') : Number(establishmentSummaryFor(venue.id).average_rating).toFixed(1) }} ★ · {{ establishmentSummaryFor(venue.id).rating_count }} {{ t('ratings') }}</p></div><template v-if="user"><div class="mt-2"><div class="flex min-w-0 items-center gap-2" :aria-label="`${t('rateThisBar')}: ${venue.name}`"><span class="shrink-0 text-xs tabular-nums text-stone-500">1.0</span><input class="bar-rating-slider min-w-0 flex-1" :class="hasRatingSelection(establishmentRatingDrafts, venue.id, myEstablishmentReviews[venue.id]?.rating) ? 'bar-rating-slider--rated' : 'bar-rating-slider--unrated'" type="range" min="1" max="5" step="0.1" :value="ratingDraft(establishmentRatingDrafts, venue.id, myEstablishmentReviews[venue.id]?.rating)" :disabled="barRatingBusy === venue.id" :aria-label="`${t('rateThisBar')}: ${venue.name}`" @input="setRatingDraft(establishmentRatingDrafts, venue.id, ratingInputValue($event))" @change="rateEstablishment(venue, Number(establishmentRatingDrafts[venue.id] ?? myEstablishmentReviews[venue.id]?.rating ?? 3))"><span class="shrink-0 text-xs tabular-nums text-stone-500">5.0</span><span class="shrink-0 rounded px-1.5 py-0.5 text-sm font-bold tabular-nums" :class="hasRatingSelection(establishmentRatingDrafts, venue.id, myEstablishmentReviews[venue.id]?.rating) ? 'bg-emerald-700 text-white shadow-sm' : 'bg-stone-100 text-stone-400'">{{ ratingLabel(establishmentRatingDrafts, venue.id, myEstablishmentReviews[venue.id]?.rating) }}</span><button v-if="myEstablishmentReviews[venue.id]" type="button" class="shrink-0 rounded border border-red-300 px-2 py-1 text-xs font-semibold text-red-700" :disabled="barRatingBusy === venue.id" @click="removeEstablishmentRating(venue)">{{ t('removeBarRating') }}</button></div></div></template><p v-else class="mt-2 text-stone-600"><button type="button" class="font-semibold text-emerald-700 underline" @click="openAuth('signin')">{{ t('signInToRate') }}</button></p></div><div class="mt-4 grid gap-2 text-sm text-stone-600"><p v-if="venue.address">{{ venue.address }}</p><div v-if="text(venue.hours_notes_en, venue.hours_notes_es) || openingHourRows(venue.opening_hours).length"><button type="button" class="flex w-full items-center justify-between text-left font-semibold text-stone-700 hover:text-emerald-800" :aria-expanded="Boolean(expandedOpeningHours[venue.id])" @click.stop="toggleOpeningHours(venue.id)"><span>{{ t('openingHours') }}</span><span class="transition-transform" :class="expandedOpeningHours[venue.id] ? 'rotate-180' : ''" aria-hidden="true">▸</span></button><p v-if="expandedOpeningHours[venue.id] && text(venue.hours_notes_en, venue.hours_notes_es)" class="mt-1 whitespace-pre-line">{{ text(venue.hours_notes_en, venue.hours_notes_es) }}</p><div v-else-if="expandedOpeningHours[venue.id] && openingHourRows(venue.opening_hours).length" class="mt-1 grid grid-cols-[5.5rem_1fr] gap-x-2 gap-y-1"><template v-for="row in openingHourRows(venue.opening_hours)" :key="row.day"><span class="font-medium">{{ row.day }}</span><span>{{ row.times }}</span></template></div></div><p v-if="venue.phone"><strong>{{ t('phone') }}</strong> {{ venue.phone }}</p><p v-if="venue.whatsapp"><strong>{{ t('whatsapp') }}</strong> {{ venue.whatsapp }}</p><p v-if="venue.website_url"><a class="text-emerald-700 underline" :href="venue.website_url" target="_blank" rel="noopener">{{ t('website') }}</a></p><p v-if="venue.facebook_url"><a class="text-emerald-700 underline" :href="venue.facebook_url" target="_blank" rel="noopener">{{ t('facebook') }}</a></p></div><div class="mt-5 grid gap-3 md:grid-cols-2"><section :id="`festival-tapa-${tapa.id}`" v-for="tapa in tapasFor(venue.id)" :key="tapa.id" class="rounded-lg bg-stone-50 p-2 transition sm:p-4" :class="highlightedTapaId === tapa.id ? 'ring-2 ring-emerald-500 ring-offset-2' : ''"><img v-if="tapaPhotoUrl(tapa)" :src="tapaPhotoUrl(tapa)" :alt="text(tapa.name_en, tapa.name_es)" class="mb-3 h-44 w-full rounded-md object-cover" loading="lazy"><div class="flex items-start justify-between gap-2"><div class="flex min-w-0 items-start gap-2"><button type="button" class="mt-0.5 shrink-0 text-xl leading-none text-amber-500 transition hover:scale-110 focus-visible:ring-2 focus-visible:ring-emerald-700" :class="wantsToTry(tapa.id) ? 'text-amber-500' : 'text-stone-400'" :aria-pressed="wantsToTry(tapa.id)" :aria-label="wantsToTry(tapa.id) ? t('removeWantToTry') : t('wantToTry')" :title="wantsToTry(tapa.id) ? t('removeWantToTry') : t('wantToTry')" @click.stop="toggleWantedTapa(tapa.id)">{{ wantsToTry(tapa.id) ? '★' : '☆' }}</button><h3 class="font-bold">{{ tapa.festival_number ? `${tapa.festival_number}. ` : '' }}{{ text(tapa.name_en, tapa.name_es) }}</h3></div></div><p v-if="tapa.participation_status === 'withdrawn'" class="mt-1 text-sm font-semibold text-red-700">{{ t('withdrawn') }}</p><div class="mt-2 min-h-[5rem] text-sm text-stone-600 md:line-clamp-4"><p v-if="text(tapa.description_en, tapa.description_es)">{{ text(tapa.description_en, tapa.description_es) }}</p></div><div class="mt-4 border-t border-stone-200 pt-4 text-sm"><p class="text-stone-700"><strong>{{ t('publicRating') }} {{ summaryFor(tapa.id).average_rating == null ? t('unrated') : Number(summaryFor(tapa.id).average_rating).toFixed(1) }} ★</strong> · {{ summaryFor(tapa.id).rating_count }} {{ t('ratings') }}<span v-if="summaryFor(tapa.id).good_excellent_percentage != null"> · {{ Number(summaryFor(tapa.id).good_excellent_percentage).toFixed(0) }}% {{ t('goodExcellent') }}</span></p><template v-if="tapa.participation_status === 'active'"><div class="mt-4 rounded-lg border-2 border-emerald-200 bg-white p-3"><p v-if="!user" class="text-stone-600">{{ t('chooseStars') }} <button type="button" class="font-semibold text-emerald-700 underline" @click="openAuth('signin')">{{ t('signInToRate') }}</button>.</p><template v-else><p class="font-bold text-emerald-950">{{ t('rateThisTapa') }}</p><div class="mt-2 flex min-w-0 items-center gap-2" :aria-label="`${t('rateThisTapa')}: ${text(tapa.name_en, tapa.name_es)}`"><span class="shrink-0 text-xs tabular-nums text-stone-500">1.0</span><input class="min-w-0 flex-1" :class="hasRatingSelection(tapaRatingDrafts, tapa.id, myReviews[tapa.id]?.rating) ? 'accent-emerald-700' : 'accent-stone-400 opacity-70'" type="range" min="1" max="5" step="0.1" :value="ratingDraft(tapaRatingDrafts, tapa.id, myReviews[tapa.id]?.rating)" :disabled="ratingBusy === tapa.id" :aria-label="`${t('rateThisTapa')}: ${text(tapa.name_en, tapa.name_es)}`" @input="setRatingDraft(tapaRatingDrafts, tapa.id, ratingInputValue($event))" @change="rate(tapa, Number(tapaRatingDrafts[tapa.id] ?? myReviews[tapa.id]?.rating ?? 3))"><span class="shrink-0 text-xs tabular-nums text-stone-500">5.0</span><span class="shrink-0 text-sm font-semibold tabular-nums">{{ ratingLabel(tapaRatingDrafts, tapa.id, myReviews[tapa.id]?.rating) }}</span></div><p class="mt-1 text-xs text-stone-600"><strong>{{ t('yourRating') }}</strong> {{ myReviews[tapa.id] ? `${Number(myReviews[tapa.id].rating).toFixed(1)} ★` : t('notRatedYet') }}</p><label class="mt-4 block font-semibold text-stone-800">{{ t('yourReview') }} · {{ myReviews[tapa.id]?.review_text ? t('editReview') : t('writeReview') }}<textarea v-model="reviewDrafts[tapa.id]" class="mt-1 min-h-24 w-full rounded border border-stone-300 p-2 font-normal" :maxlength="maxReviewLength" :placeholder="t('writeReview')" :disabled="ratingBusy === tapa.id" /><span class="mt-1 block text-right text-xs font-normal text-stone-500">{{ (reviewDrafts[tapa.id] || '').length }} / {{ maxReviewLength }}</span></label><button type="button" class="mt-2 rounded bg-emerald-700 px-3 py-2 font-semibold text-white disabled:opacity-50" :disabled="ratingBusy === tapa.id" @click="saveReview(tapa)">{{ t('saveReview') }}</button><button v-if="myReviews[tapa.id]" type="button" class="mt-3 ml-2 rounded border border-red-300 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50" :disabled="ratingBusy === tapa.id" @click="removeRating(tapa)">{{ t('removeRating') }}</button></template></div></template><div class="mt-4"><div class="flex items-center justify-between gap-2"><p class="font-semibold text-stone-800">{{ t('reviews') }}</p><button v-if="reviewsFor(tapa.id).length > 3" type="button" class="text-xs font-semibold text-emerald-700 underline" @click="reviewsExpanded[tapa.id] = !reviewsExpanded[tapa.id]">{{ reviewsExpanded[tapa.id] ? t('hideReviews') : t('showReviews') }} ({{ reviewsFor(tapa.id).length }})</button></div><p v-if="!reviewsFor(tapa.id).length" class="mt-1 text-stone-500">{{ t('noReviewsYet') }}</p><ol v-else class="mt-2 space-y-2"><li v-for="review in shownReviewsFor(tapa.id)" :key="review.id" class="rounded bg-white p-2 text-stone-700"><p class="text-xs font-semibold text-stone-500">{{ t('festivalVisitor') }} · {{ review.rating }} ★ · {{ formatReviewDate(review.created_at) }}</p><p class="mt-1 whitespace-pre-wrap">{{ review.review_text }}</p></li></ol></div></div></section></div></div></article></div>
+        <div class="space-y-3 pb-24 sm:space-y-6 sm:pb-32"><article :id="`festival-establishment-${venue.id}`" v-for="venue in sortedEstablishments" :key="venue.id" class="rounded-xl border border-stone-200 bg-white shadow-sm"><button type="button" class="flex w-full items-center justify-between gap-2 p-3 text-left sm:p-5" :aria-expanded="Boolean(expandedEstablishments[venue.id])" @click="toggleEstablishment(venue.id)"><h2 class="font-display text-base font-bold sm:text-2xl">{{ venue.name }}</h2><span class="text-xl text-emerald-700 transition-transform sm:text-2xl" :class="expandedEstablishments[venue.id] ? 'rotate-180' : ''" aria-hidden="true">⌄</span></button><div v-if="expandedEstablishments[venue.id]" class="border-t border-stone-200 p-3 pt-3 sm:p-5 sm:pt-4"><p v-if="venue.participation_status === 'withdrawn'" class="mt-1 text-sm font-semibold text-red-700">{{ t('withdrawn') }}</p><p v-else-if="venue.closure_status !== 'normal'" class="mt-1 text-sm font-semibold text-stone-600">{{ closureLabel(venue.closure_status) }}</p><p v-if="text(venue.description_en, venue.description_es)" class="mt-3 text-stone-700">{{ text(venue.description_en, venue.description_es) }}</p><div class="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm"><div class="flex flex-wrap items-center gap-2"><p class="mr-auto font-bold text-emerald-950">{{ t('rateThisBar') }}</p><p class="text-xs text-stone-600"><strong>{{ t('barRating') }}</strong> {{ establishmentSummaryFor(venue.id).average_rating == null ? t('unrated') : Number(establishmentSummaryFor(venue.id).average_rating).toFixed(1) }} ★ · {{ establishmentSummaryFor(venue.id).rating_count }} {{ t('ratings') }}</p></div><template v-if="user"><div class="mt-2"><div class="flex min-w-0 items-center gap-2" :aria-label="`${t('rateThisBar')}: ${venue.name}`"><span class="shrink-0 text-xs tabular-nums text-stone-500">1.0</span><input class="bar-rating-slider min-w-0 flex-1" :class="hasRatingSelection(establishmentRatingDrafts, venue.id, myEstablishmentReviews[venue.id]?.rating) ? 'bar-rating-slider--rated' : 'bar-rating-slider--unrated'" type="range" min="1" max="5" step="0.1" :value="ratingDraft(establishmentRatingDrafts, venue.id, myEstablishmentReviews[venue.id]?.rating)" :disabled="barRatingBusy === venue.id" :aria-label="`${t('rateThisBar')}: ${venue.name}`" @input="setRatingDraft(establishmentRatingDrafts, venue.id, ratingInputValue($event))" @change="rateEstablishment(venue, Number(establishmentRatingDrafts[venue.id] ?? myEstablishmentReviews[venue.id]?.rating ?? 3))"><span class="shrink-0 text-xs tabular-nums text-stone-500">5.0</span><span class="shrink-0 rounded px-1.5 py-0.5 text-sm font-bold tabular-nums" :class="hasRatingSelection(establishmentRatingDrafts, venue.id, myEstablishmentReviews[venue.id]?.rating) ? 'bg-emerald-700 text-white shadow-sm' : 'bg-stone-100 text-stone-400'">{{ ratingLabel(establishmentRatingDrafts, venue.id, myEstablishmentReviews[venue.id]?.rating) }}</span><button v-if="myEstablishmentReviews[venue.id]" type="button" class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded border border-red-300 text-red-700 transition hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-700 disabled:opacity-50" :disabled="barRatingBusy === venue.id" :aria-label="t('removeBarRating')" :title="t('removeBarRating')" @click.stop="removeEstablishmentRating(venue)"><svg aria-hidden="true" viewBox="0 0 24 24" class="h-5 w-5 fill-current"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h2v-8h-2Zm4 0v8h2v-8h-2Z" /></svg></button></div></div></template><p v-else class="mt-2 text-stone-600"><button type="button" class="font-semibold text-emerald-700 underline" @click="openAuth('signin')">{{ t('signInToRate') }}</button></p></div><div class="mt-4 grid gap-2 text-sm text-stone-600"><p v-if="venue.address">{{ venue.address }}</p><div v-if="text(venue.hours_notes_en, venue.hours_notes_es) || openingHourRows(venue.opening_hours).length"><button type="button" class="flex w-full items-center justify-between text-left font-semibold text-stone-700 hover:text-emerald-800" :aria-expanded="Boolean(expandedOpeningHours[venue.id])" @click.stop="toggleOpeningHours(venue.id)"><span>{{ t('openingHours') }}</span><span class="transition-transform" :class="expandedOpeningHours[venue.id] ? 'rotate-180' : ''" aria-hidden="true">▸</span></button><p v-if="expandedOpeningHours[venue.id] && text(venue.hours_notes_en, venue.hours_notes_es)" class="mt-1 whitespace-pre-line">{{ text(venue.hours_notes_en, venue.hours_notes_es) }}</p><div v-else-if="expandedOpeningHours[venue.id] && openingHourRows(venue.opening_hours).length" class="mt-1 grid grid-cols-[5.5rem_1fr] gap-x-2 gap-y-1"><template v-for="row in openingHourRows(venue.opening_hours)" :key="row.day"><span class="font-medium">{{ row.day }}</span><span>{{ row.times }}</span></template></div></div><p v-if="venue.phone"><strong>{{ t('phone') }}</strong> {{ venue.phone }}</p><p v-if="venue.whatsapp"><strong>{{ t('whatsapp') }}</strong> {{ venue.whatsapp }}</p><p v-if="venue.website_url"><a class="text-emerald-700 underline" :href="venue.website_url" target="_blank" rel="noopener">{{ t('website') }}</a></p><p v-if="venue.facebook_url"><a class="text-emerald-700 underline" :href="venue.facebook_url" target="_blank" rel="noopener">{{ t('facebook') }}</a></p></div><div class="mt-5 grid gap-3 md:grid-cols-2"><section :id="`festival-tapa-${tapa.id}`" v-for="tapa in tapasFor(venue.id)" :key="tapa.id" class="rounded-lg bg-stone-50 p-2 transition sm:p-4" :class="highlightedTapaId === tapa.id ? 'ring-2 ring-emerald-500 ring-offset-2' : ''"><img v-if="tapaPhotoUrl(tapa)" :src="tapaPhotoUrl(tapa)" :alt="text(tapa.name_en, tapa.name_es)" class="mb-3 h-44 w-full rounded-md object-cover" loading="lazy"><div class="flex items-start justify-between gap-2"><div class="flex min-w-0 items-start gap-2"><button type="button" class="mt-0.5 shrink-0 text-xl leading-none text-amber-500 transition hover:scale-110 focus-visible:ring-2 focus-visible:ring-emerald-700" :class="wantsToTry(tapa.id) ? 'text-amber-500' : 'text-stone-400'" :aria-pressed="wantsToTry(tapa.id)" :aria-label="wantsToTry(tapa.id) ? t('removeWantToTry') : t('wantToTry')" :title="wantsToTry(tapa.id) ? t('removeWantToTry') : t('wantToTry')" @click.stop="toggleWantedTapa(tapa.id)">{{ wantsToTry(tapa.id) ? '★' : '☆' }}</button><h3 class="font-bold">{{ tapa.festival_number ? `${tapa.festival_number}. ` : '' }}{{ text(tapa.name_en, tapa.name_es) }}</h3></div></div><p v-if="tapa.participation_status === 'withdrawn'" class="mt-1 text-sm font-semibold text-red-700">{{ t('withdrawn') }}</p><div class="mt-2 min-h-[5rem] text-sm text-stone-600 md:line-clamp-4"><p v-if="text(tapa.description_en, tapa.description_es)">{{ text(tapa.description_en, tapa.description_es) }}</p></div><div class="mt-4 border-t border-stone-200 pt-4 text-sm"><p class="text-stone-700"><strong>{{ t('publicRating') }} {{ summaryFor(tapa.id).average_rating == null ? t('unrated') : Number(summaryFor(tapa.id).average_rating).toFixed(1) }} ★</strong> · {{ summaryFor(tapa.id).rating_count }} {{ t('ratings') }}<span v-if="summaryFor(tapa.id).good_excellent_percentage != null"> · {{ Number(summaryFor(tapa.id).good_excellent_percentage).toFixed(0) }}% {{ t('goodExcellent') }}</span></p><template v-if="tapa.participation_status === 'active'"><div class="mt-4 rounded-lg border-2 border-emerald-200 bg-white p-3"><p v-if="!user" class="text-stone-600">{{ t('chooseStars') }} <button type="button" class="font-semibold text-emerald-700 underline" @click="openAuth('signin')">{{ t('signInToRate') }}</button>.</p><template v-else><p class="font-bold text-emerald-950">{{ t('rateThisTapa') }}</p><div class="mt-2 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2" :aria-label="`${t('rateThisTapa')}: ${text(tapa.name_en, tapa.name_es)}`"><input class="bar-rating-slider block min-w-0 w-full" :class="hasRatingSelection(tapaRatingDrafts, tapa.id, myReviews[tapa.id]?.rating) ? 'bar-rating-slider--rated' : 'bar-rating-slider--unrated'" type="range" min="1" max="5" step="0.1" :value="ratingDraft(tapaRatingDrafts, tapa.id, myReviews[tapa.id]?.rating)" :disabled="ratingBusy === tapa.id" :aria-label="`${t('rateThisTapa')}: ${text(tapa.name_en, tapa.name_es)}`" @input="setRatingDraft(tapaRatingDrafts, tapa.id, ratingInputValue($event))" @change="rate(tapa, Number(tapaRatingDrafts[tapa.id] ?? myReviews[tapa.id]?.rating ?? 3))"><button type="button" class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded border border-red-300 text-red-700 transition hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-700 disabled:cursor-not-allowed disabled:opacity-35" :disabled="ratingBusy === tapa.id || myReviews[tapa.id]?.rating == null" :aria-label="t('removeRating')" :title="t('removeRating')" @click.stop="removeRating(tapa)"><svg aria-hidden="true" viewBox="0 0 24 24" class="h-5 w-5 fill-current"><path d="M9 3h6l1 2h4v2H4V5h4l-1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h2v-8h-2Zm4 0v8h2v-8h-2Z" /></svg></button></div><p v-if="hasRatingSelection(tapaRatingDrafts, tapa.id, myReviews[tapa.id]?.rating)" class="mt-1 text-sm font-semibold tabular-nums">{{ ratingLabel(tapaRatingDrafts, tapa.id, myReviews[tapa.id]?.rating) }}</p><div class="mt-4 flex flex-col"><div class="flex items-center justify-between gap-2"><p class="font-semibold text-stone-800">{{ t('writeReview') }}</p><span class="text-xs font-normal text-stone-500">{{ (reviewDrafts[tapa.id] || '').length }} / {{ maxReviewLength }}</span></div><textarea v-model="reviewDrafts[tapa.id]" class="mt-1 min-h-24 w-full rounded border border-stone-300 p-2 font-normal" :maxlength="maxReviewLength" :placeholder="t('writeReview')" :disabled="ratingBusy === tapa.id" :aria-label="t('writeReview')" /><div class="mt-2 flex justify-end gap-2"><button type="button" class="inline-flex h-10 w-10 items-center justify-center rounded bg-emerald-700 text-white transition hover:bg-emerald-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-700 disabled:opacity-50" :disabled="ratingBusy === tapa.id" :aria-label="t('saveReview')" :title="t('saveReview')" @click.stop="saveReview(tapa)"><svg aria-hidden="true" viewBox="0 0 24 24" class="h-5 w-5 fill-current"><path d="M5 3h12l4 4v14H3V3h2Zm2 2v5h8V5H7Zm10 14v-7H7v7h10Zm-2-5v3H9v-3h6Z" /></svg></button><button type="button" class="inline-flex h-10 w-10 items-center justify-center rounded border border-red-300 text-red-700 transition hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-700 disabled:cursor-not-allowed disabled:opacity-35" :disabled="ratingBusy === tapa.id || !myReviews[tapa.id]?.review_text?.trim()" :aria-label="t('removeReview')" :title="t('removeReview')" @click.stop="removeReview(tapa)"><svg aria-hidden="true" viewBox="0 0 24 24" class="h-5 w-5 fill-current"><path d="M9 3h6l1 2h4v2H4V5h4l-1-2Zm-3 6h12l-1 12H7L6 9Zm4 2v8h2v-8h-2Zm4 0v8h2v-8h-2Z" /></svg></button></div></div></template></div></template><div class="mt-4"><div class="flex items-center justify-between gap-2"><p class="font-semibold text-stone-800">{{ t('reviews') }}</p><button v-if="reviewsFor(tapa.id).length > 3" type="button" class="text-xs font-semibold text-emerald-700 underline" @click="reviewsExpanded[tapa.id] = !reviewsExpanded[tapa.id]">{{ reviewsExpanded[tapa.id] ? t('hideReviews') : t('showReviews') }} ({{ reviewsFor(tapa.id).length }})</button></div><p v-if="!reviewsFor(tapa.id).length" class="mt-1 text-stone-500">{{ t('noReviewsYet') }}</p><ol v-else class="mt-2 space-y-2"><li v-for="review in shownReviewsFor(tapa.id)" :key="review.id" class="rounded bg-white p-2 text-stone-700"><p class="text-xs font-semibold text-stone-500">{{ t('festivalVisitor') }}<span v-if="review.rating != null"> · {{ review.rating }} ★</span> · {{ formatReviewDate(review.created_at) }}</p><p class="mt-1 whitespace-pre-wrap">{{ review.review_text }}</p></li></ol></div></div></section></div></div></article></div>
           </div>
         </div>
         <section class="mx-4 mt-6 rounded-xl border border-stone-200 bg-white p-4 text-sm text-stone-600 sm:mx-0">
@@ -442,7 +538,7 @@ onMounted(loadFestival);
           <p v-if="showRankings" class="mt-2 text-xs text-stone-500">{{ t('rankingDescription') }}</p><dl class="mt-2 grid gap-1"><div><dt class="inline font-semibold text-stone-800">{{ t('location') }}</dt><dd class="inline"> {{ festival.city }}</dd></div></dl>
         </section>
         <footer class="mx-4 mt-6 pb-4 text-center sm:mx-0"><button type="button" class="text-xs font-semibold text-emerald-700 underline" @click="reportOpen = true">{{ t('reportProblem') }}</button><p class="mt-2 text-[10px] text-stone-400">Version: {{ buildReference }}</p></footer>
-        <div v-if="reportOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-4" role="dialog" aria-modal="true" :aria-label="t('reportProblemTitle')" @click.self="reportOpen = false"><form class="w-full max-w-sm rounded-xl bg-white p-4 shadow-xl" @submit.prevent="submitProblemReport"><div class="flex items-center justify-between gap-3"><h2 class="font-display text-lg font-bold">{{ t('reportProblemTitle') }}</h2><button type="button" class="text-xl text-stone-500" aria-label="Close" @click="reportOpen = false">×</button></div><p class="mt-2 text-xs text-stone-600">{{ t('reportHint') }}</p><label class="mt-3 block text-sm font-semibold">{{ t('contactEmailOptional') }}<input v-model="reportEmail" class="mt-1 w-full rounded border border-stone-300 p-2 font-normal" type="email" autocomplete="email"></label><label class="mt-3 block text-sm font-semibold">{{ t('problemDescription') }}<textarea v-model="reportDescription" class="mt-1 min-h-28 w-full rounded border border-stone-300 p-2 font-normal" required></textarea></label><div class="mt-4 flex justify-end gap-2"><button type="button" class="rounded border px-3 py-2 text-sm" @click="reportOpen = false">×</button><button class="rounded bg-emerald-700 px-3 py-2 text-sm font-bold text-white">{{ t('sendReport') }}</button></div></form></div>
+        <div v-if="unsavedReviewDialogOpen" class="fixed inset-0 z-[60] flex items-center justify-center bg-stone-950/40 p-4" role="dialog" aria-modal="true" :aria-labelledby="'unsaved-review-title'" @click.self="stayWithUnsavedReview"><div class="w-full max-w-sm rounded-xl bg-white p-4 shadow-xl"><h2 id="unsaved-review-title" class="font-display text-lg font-bold">{{ t('unsavedReviewTitle') }}</h2><p class="mt-2 text-sm text-stone-600">{{ t('unsavedReviewMessage') }}</p><div class="mt-5 flex flex-wrap justify-end gap-2"><button type="button" class="rounded bg-emerald-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50" :disabled="ratingBusy === unsavedReviewTapaId" @click="saveUnsavedReviewAndContinue">{{ t('saveReview') }}</button><button type="button" class="rounded border border-red-300 px-3 py-2 text-sm font-semibold text-red-700" @click="discardUnsavedReviewAndContinue">{{ t('discardChanges') }}</button><button type="button" class="rounded border border-stone-300 px-3 py-2 text-sm font-semibold text-stone-700" @click="stayWithUnsavedReview">{{ t('stayHere') }}</button></div></div></div><div v-if="reportOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-4" role="dialog" aria-modal="true" :aria-label="t('reportProblemTitle')" @click.self="reportOpen = false"><form class="w-full max-w-sm rounded-xl bg-white p-4 shadow-xl" @submit.prevent="submitProblemReport"><div class="flex items-center justify-between gap-3"><h2 class="font-display text-lg font-bold">{{ t('reportProblemTitle') }}</h2><button type="button" class="text-xl text-stone-500" aria-label="Close" @click="reportOpen = false">×</button></div><p class="mt-2 text-xs text-stone-600">{{ t('reportHint') }}</p><label class="mt-3 block text-sm font-semibold">{{ t('contactEmailOptional') }}<input v-model="reportEmail" class="mt-1 w-full rounded border border-stone-300 p-2 font-normal" type="email" autocomplete="email"></label><label class="mt-3 block text-sm font-semibold">{{ t('problemDescription') }}<textarea v-model="reportDescription" class="mt-1 min-h-28 w-full rounded border border-stone-300 p-2 font-normal" required></textarea></label><div class="mt-4 flex justify-end gap-2"><button type="button" class="rounded border px-3 py-2 text-sm" @click="reportOpen = false">×</button><button class="rounded bg-emerald-700 px-3 py-2 text-sm font-bold text-white">{{ t('sendReport') }}</button></div></form></div>
       </template>
     </section>
   </main>
