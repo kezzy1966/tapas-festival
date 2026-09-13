@@ -1,5 +1,6 @@
 <script setup lang="ts">
-type Tab = 'festivals' | 'establishments' | 'tapas';
+type Tab = 'festivals' | 'establishments' | 'tapas' | 'reports';
+type RatingActivity = { festival_id: string; user_label: string; tapa_rating_count: number; bar_rating_count: number; total_rating_count: number; tapa_ratings: Array<{ establishment_name: string; tapa_name: string; rating: number }>; bar_ratings: Array<{ establishment_name: string; rating: number }> };
 
 const supabase = useSupabaseClient<any>() as any;
 const user = useSupabaseUser();
@@ -23,6 +24,12 @@ const editingTapa = ref<any | null>(null);
 const slugManuallyEdited = ref(false);
 const fieldDefinitions = ref<any[]>([]);
 const fieldValues = ref<any[]>([]);
+const reportRows = ref<RatingActivity[]>([]);
+const reportLoading = ref(false);
+const reportFestivalId = ref('');
+const reportUserLabel = ref('');
+const reportRatingType = ref<'all' | 'tapa' | 'bar'>('all');
+const expandedReportRows = ref<Record<string, boolean>>({});
 
 const blankFestival = () => ({ name_en: '', name_es: '', slug: '', start_date: '', end_date: '', city: '', default_tapa_price: '5.00', publication_status: 'draft', reviews_enabled: true, show_rankings: true });
 const blankEstablishment = () => ({ festival_id: '', name: '', description_en: '', description_es: '', address: '', coordinates: '', phone: '', instagram: '', whatsapp: '', facebook_url: '', website_url: '', hours_notes_en: '', hours_notes_es: '', is_published: false, participation_status: 'active', closure_status: 'normal' });
@@ -32,6 +39,32 @@ const establishmentForm = ref(blankEstablishment());
 const tapaForm = ref(blankTapa());
 
 const db = () => supabase.schema('festival');
+const reportUsers = computed(() => [...new Set(reportRows.value.map((row) => row.user_label))].sort());
+const filteredReportRows = computed(() => reportRows.value
+  .filter((row) => !reportUserLabel.value || row.user_label === reportUserLabel.value)
+  .filter((row) => reportRatingType.value === 'all' || (reportRatingType.value === 'tapa' ? Number(row.tapa_rating_count) > 0 : Number(row.bar_rating_count) > 0))
+  .sort((a, b) => Number(b.total_rating_count) - Number(a.total_rating_count) || a.user_label.localeCompare(b.user_label)));
+const reportSummary = computed(() => filteredReportRows.value.reduce((summary, row) => {
+  const tapa = reportRatingType.value === 'bar' ? 0 : Number(row.tapa_rating_count);
+  const bar = reportRatingType.value === 'tapa' ? 0 : Number(row.bar_rating_count);
+  summary.users += 1; summary.tapa += tapa; summary.bar += bar; summary.total += tapa + bar;
+  return summary;
+}, { users: 0, tapa: 0, bar: 0, total: 0 }));
+function reportRowKey(row: RatingActivity) { return `${row.festival_id}:${row.user_label}`; }
+function toggleReportRow(row: RatingActivity) { const key = reportRowKey(row); expandedReportRows.value[key] = !expandedReportRows.value[key]; }
+async function loadRatingActivity() {
+  if (!isAdmin.value) return;
+  reportLoading.value = true; error.value = '';
+  const { data, error: reportError } = await db().rpc('user_rating_activity', { p_festival_id: reportFestivalId.value || null });
+  reportLoading.value = false;
+  if (reportError) { error.value = reportError.message; return; }
+  reportRows.value = (data || []) as RatingActivity[];
+  expandedReportRows.value = {};
+}
+function selectTab(nextTab: Tab) {
+  tab.value = nextTab;
+  if (nextTab === 'reports') void loadRatingActivity();
+}
 const valueOrNull = (value: string) => value.trim() || null;
 const numberOrNull = (value: string) => value === '' ? null : Number(value);
 
@@ -202,7 +235,7 @@ watch(user, checkAccess, { immediate: true });
       <template v-else>
         <p v-if="error" class="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{{ error }}</p>
         <p v-if="notice" class="mb-4 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{{ notice }}</p>
-        <nav class="mb-6 flex gap-2 border-b border-stone-200"><button v-for="item in ['festivals','establishments','tapas'] as Tab[]" :key="item" class="border-b-2 px-4 py-3 text-sm font-semibold capitalize" :class="tab === item ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="tab=item">{{ item }}</button></nav>
+        <nav class="mb-6 flex gap-2 border-b border-stone-200"><button v-for="item in ['festivals','establishments','tapas','reports'] as Tab[]" :key="item" class="border-b-2 px-4 py-3 text-sm font-semibold capitalize" :class="tab === item ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="selectTab(item)">{{ item }}</button></nav>
         <p v-if="loading" class="text-sm text-stone-500">Loading…</p>
 
         <section v-if="tab === 'festivals'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]"><div><h2 class="mb-3 text-xl font-bold">Festivals</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Dates</th><th class="p-3">Status</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in festivals" :key="row.id" class="border-t"><td class="p-3">{{ row.name_en || row.name_es }}</td><td class="p-3">{{ row.start_date }} – {{ row.end_date }}</td><td class="p-3">{{ row.publication_status }}</td><td class="p-3"><button class="text-emerald-700" @click="editFestival(row)">Edit</button></td></tr></tbody></table></div></div><form class="space-y-3 rounded-xl border bg-white p-5" @submit.prevent="saveFestival"><h2 class="text-lg font-bold">{{ editingFestival ? 'Edit festival' : 'New festival' }}</h2><input v-model="festivalForm.name_en" class="w-full rounded border p-2" placeholder="English name" required @input="updateGeneratedSlug"><input v-model="festivalForm.name_es" class="w-full rounded border p-2" placeholder="Spanish name"><input v-model="festivalForm.slug" class="w-full rounded border p-2" placeholder="slug" required @input="markSlugManual"><div class="grid grid-cols-2 gap-2"><input v-model="festivalForm.start_date" class="rounded border p-2" type="date" required><input v-model="festivalForm.end_date" class="rounded border p-2" type="date" required></div><input v-model="festivalForm.city" class="w-full rounded border p-2" placeholder="City" required><input v-model="festivalForm.default_tapa_price" class="w-full rounded border p-2" type="number" min="0" step="0.01" placeholder="Default price" required><select v-model="festivalForm.publication_status" class="w-full rounded border p-2"><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select><label class="flex gap-2 text-sm"><input v-model="festivalForm.reviews_enabled" type="checkbox"> Reviews enabled</label><label class="flex gap-2 text-sm"><input v-model="festivalForm.show_rankings" type="checkbox"> Show rankings</label><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetFestival">Clear</button></div></form></section>
@@ -224,6 +257,13 @@ watch(user, checkAccess, { immediate: true });
           <div><h2 class="mb-3 text-xl font-bold">Tapas</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Establishment</th><th class="p-3">Price</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in tapas" :key="row.id" class="border-t"><td class="p-3">{{ row.name_en || row.name_es }}</td><td class="p-3">{{ establishments.find(e => e.id === row.establishment_id)?.name || '—' }}</td><td class="p-3">{{ row.price_override ?? festivals.find(f => f.id === establishments.find(e => e.id === row.establishment_id)?.festival_id)?.default_tapa_price ?? '—' }}</td><td class="p-3"><button class="text-emerald-700" @click="editTapa(row)">Edit</button></td></tr></tbody></table></div></div>
           <form class="space-y-4 rounded-xl border bg-white p-5" @submit.prevent="saveTapa"><h2 class="text-lg font-bold">{{ editingTapa ? 'Edit tapa' : 'New tapa' }}</h2><select v-model="tapaForm.establishment_id" class="w-full rounded border p-2" required><option value="" disabled>Establishment</option><option v-for="e in establishments" :key="e.id" :value="e.id">{{ e.name }}</option></select><div class="grid gap-3 sm:grid-cols-2"><input v-model="tapaForm.festival_number" class="rounded border p-2" type="number" min="1" placeholder="Programme number"><input v-model="tapaForm.price_override" class="rounded border p-2" type="number" min="0" step="0.01" placeholder="Price override (optional)"><input v-model="tapaForm.name_es" class="rounded border p-2 sm:col-span-2" placeholder="Spanish name"><input v-model="tapaForm.name_en" class="rounded border p-2 sm:col-span-2" placeholder="English name"><textarea v-model="tapaForm.description_es" class="min-h-24 rounded border p-2" placeholder="Spanish description"/><textarea v-model="tapaForm.description_en" class="min-h-24 rounded border p-2" placeholder="English description"/><input v-model="tapaForm.photo_path" class="rounded border p-2 sm:col-span-2" placeholder="Photo path (optional)"></div><p class="text-xs text-stone-500">Leave price blank to use the festival default. The photo path supports the existing Storage workflow.</p><div class="grid gap-3 sm:grid-cols-2"><label class="flex items-center gap-2 text-sm"><input v-model="tapaForm.is_published" type="checkbox"> Published</label><select v-model="tapaForm.participation_status" class="rounded border p-2"><option value="active">Active</option><option value="withdrawn">Withdrawn</option></select></div><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetTapa">Clear</button></div></form>
         </section>
+        <section v-if="tab === 'reports'" class="space-y-5">
+          <div class="flex flex-wrap items-end justify-between gap-3"><div><h2 class="text-xl font-bold">Reports</h2><p class="mt-1 text-sm text-stone-600">Admin-only festival activity reports.</p></div><button type="button" class="rounded border border-stone-300 px-3 py-2 text-sm font-semibold" :disabled="reportLoading" @click="loadRatingActivity">{{ reportLoading ? 'Loading…' : 'Refresh' }}</button></div>
+          <section class="rounded-xl border bg-white p-4"><h3 class="font-bold">User Rating Activity</h3><div class="mt-3 grid gap-3 sm:grid-cols-3"><label class="text-sm font-semibold">Festival<select v-model="reportFestivalId" class="mt-1 w-full rounded border p-2 font-normal" @change="loadRatingActivity"><option value="">All festivals</option><option v-for="festival in festivals" :key="festival.id" :value="festival.id">{{ festival.name_en || festival.name_es }}</option></select></label><label class="text-sm font-semibold">User<select v-model="reportUserLabel" class="mt-1 w-full rounded border p-2 font-normal"><option value="">All users</option><option v-for="label in reportUsers" :key="label" :value="label">{{ label }}</option></select></label><label class="text-sm font-semibold">Rating type<select v-model="reportRatingType" class="mt-1 w-full rounded border p-2 font-normal"><option value="all">All</option><option value="tapa">Tapa</option><option value="bar">Bar</option></select></label></div></section>
+          <div class="grid gap-3 sm:grid-cols-4"><div class="rounded-xl border bg-white p-4"><p class="text-sm text-stone-500">Users who have rated</p><p class="mt-1 text-2xl font-bold">{{ reportSummary.users }}</p></div><div class="rounded-xl border bg-white p-4"><p class="text-sm text-stone-500">Tapa ratings</p><p class="mt-1 text-2xl font-bold">{{ reportSummary.tapa }}</p></div><div class="rounded-xl border bg-white p-4"><p class="text-sm text-stone-500">Bar ratings</p><p class="mt-1 text-2xl font-bold">{{ reportSummary.bar }}</p></div><div class="rounded-xl border bg-white p-4"><p class="text-sm text-stone-500">Total ratings</p><p class="mt-1 text-2xl font-bold">{{ reportSummary.total }}</p></div></div>
+          <div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full min-w-[680px] text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">User</th><th class="p-3 text-right">Tapa ratings</th><th class="p-3 text-right">Bar ratings</th><th class="p-3 text-right">Total</th><th class="p-3"></th></tr></thead><tbody><template v-for="row in filteredReportRows" :key="reportRowKey(row)"><tr class="border-t"><td class="p-3 font-medium">{{ row.user_label }}</td><td class="p-3 text-right">{{ row.tapa_rating_count }}</td><td class="p-3 text-right">{{ row.bar_rating_count }}</td><td class="p-3 text-right font-bold">{{ row.total_rating_count }}</td><td class="p-3 text-right"><button type="button" class="font-semibold text-emerald-700" :aria-expanded="Boolean(expandedReportRows[reportRowKey(row)])" @click="toggleReportRow(row)">{{ expandedReportRows[reportRowKey(row)] ? 'Hide' : 'Details' }}</button></td></tr><tr v-if="expandedReportRows[reportRowKey(row)]" class="border-t bg-stone-50"><td colspan="5" class="p-4"><div class="grid gap-5 md:grid-cols-2"><section v-if="reportRatingType !== 'bar'"><h4 class="font-semibold">Tapas rated</h4><ul v-if="row.tapa_ratings.length" class="mt-2 space-y-1 text-sm"><li v-for="(rating, index) in row.tapa_ratings" :key="`${rating.establishment_name}-${rating.tapa_name}-${index}`"><span class="font-medium">{{ rating.establishment_name }}</span> · {{ rating.tapa_name }} · {{ Number(rating.rating).toFixed(1) }} ★</li></ul><p v-else class="mt-2 text-sm text-stone-500">No tapa ratings.</p></section><section v-if="reportRatingType !== 'tapa'"><h4 class="font-semibold">Bars rated</h4><ul v-if="row.bar_ratings.length" class="mt-2 space-y-1 text-sm"><li v-for="(rating, index) in row.bar_ratings" :key="`${rating.establishment_name}-${index}`"><span class="font-medium">{{ rating.establishment_name }}</span> · {{ Number(rating.rating).toFixed(1) }} ★</li></ul><p v-else class="mt-2 text-sm text-stone-500">No bar ratings.</p></section></div></td></tr></template><tr v-if="!filteredReportRows.length && !reportLoading"><td colspan="5" class="p-5 text-center text-stone-500">No matching rating activity.</td></tr></tbody></table></div>
+        </section>
+
       </template>
     </div>
   </main>
