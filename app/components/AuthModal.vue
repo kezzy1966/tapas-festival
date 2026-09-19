@@ -22,6 +22,7 @@ const mode = ref<'login' | 'register' | 'reset'>('login');
 const isLoading = ref(false);
 const errorMessage = ref('');
 const successMessage = ref('');
+const passwordVisible = ref(false);
 
 const modalRef = ref<HTMLElement | null>(null);
 const { activate, deactivate } = useFocusTrap(modalRef);
@@ -52,6 +53,8 @@ const { handleSubmit, errors, resetForm } = useForm({
 const { value: email, errorMessage: emailError } = useField<string>('email');
 const { value: password, errorMessage: passwordError } = useField<string>('password');
 
+function openPasswordReset() { ui.closeModal(); void router.push({ path: '/reset-password', query: email.value.trim() ? { email: email.value.trim() } : undefined }); }
+
 async function handleGoogleLogin() {
   errorMessage.value = '';
   successMessage.value = '';
@@ -70,6 +73,7 @@ watch(() => ui.activeModal, (val) => {
     successMessage.value = '';
     isLoading.value = false;
     mode.value = 'login';
+    passwordVisible.value = false;
     resetForm();
   }
 });
@@ -217,7 +221,7 @@ const onSubmit = handleSubmit(async (formValues) => {
             placeholder="you@email.com"
             aria-required="true"
             :aria-describedby="emailError ? 'auth-email-error' : undefined"
-            class="w-full px-3.5 py-2.5 text-xs bg-bg-secondary border rounded-xl focus:outline-none focus:border-primary text-text-primary"
+            class="min-w-0 flex-1 px-3.5 py-2.5 text-xs bg-bg-secondary border rounded-xl focus:outline-none focus:border-primary text-text-primary"
             :class="emailError ? 'border-danger' : 'border-border'"
           />
           <p v-if="emailError" id="auth-email-error" class="text-[11px] text-danger mt-1">{{ emailError }}</p>
@@ -231,23 +235,24 @@ const onSubmit = handleSubmit(async (formValues) => {
             <button
               v-if="mode === 'login'"
               type="button"
-              @click="mode = 'reset'"
+              @click="openPasswordReset"
               class="text-[11px] text-primary font-semibold hover:underline"
             >
               Forgot your password?
             </button>
           </div>
+          <div class="flex items-center gap-2">
           <input
             id="auth-password"
             v-model="password"
-            type="password"
+            :type="passwordVisible ? 'text' : 'password'"
             autocomplete="current-password"
             placeholder="••••••••"
             aria-required="true"
             :aria-describedby="passwordError ? 'auth-password-error' : undefined"
             class="w-full px-3.5 py-2.5 text-xs bg-bg-secondary border rounded-xl focus:outline-none focus:border-primary text-text-primary"
             :class="passwordError ? 'border-danger' : 'border-border'"
-          />
+          /><button type="button" class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border text-text-tertiary hover:text-text-primary" :aria-label="passwordVisible ? 'Hide password' : 'Show password'" :title="passwordVisible ? 'Hide password' : 'Show password'" v-on:click="passwordVisible = !passwordVisible"><Icon v-if="passwordVisible" name="lucide:eye-off" class="h-4 w-4" aria-hidden="true" /><Icon v-else name="lucide:eye" class="h-4 w-4" aria-hidden="true" /></button></div>
           <p v-if="passwordError" id="auth-password-error" class="text-[11px] text-danger mt-1">{{ passwordError }}</p>
         </div>
 

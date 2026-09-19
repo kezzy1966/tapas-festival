@@ -18,6 +18,7 @@ const props = defineProps<{
   locationActive: boolean;
   selectedEstablishmentId: string | null;
   wantedTapas: Record<string, boolean>;
+  openNowOnly: boolean;
 }>();
 
 const mapContainer = ref<HTMLElement | null>(null);
@@ -38,6 +39,8 @@ const tiles = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 const attribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 const festivalBounds = L.latLngBounds([39.92, -0.22], [40.06, 0.04]);
 const { language, t, localized } = useFestivalLanguage();
+const { now: openingHoursNow, openingHoursStatus } = useOpeningHoursStatus();
+function venueHoursLabel(venue: Establishment) { const status = openingHoursStatus(venue.opening_hours, openingHoursNow.value); return status === 'open' ? 'Open now' : status === 'closed' ? 'Closed now' : 'Hours unavailable'; }
 const weekdays = computed(() => language.value === 'es' ? ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'] : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']);
 
 const mappableCount = () => props.establishments.filter(hasCoordinates).length;
@@ -118,7 +121,7 @@ function popupHtml(venue: Establishment) {
   const tapaList = tapas.length
     ? `<ul class="festival-map-popup__tapas">${tapas.map((tapa) => `<li><button type="button" class="festival-map-popup__tapa-link" data-tapa-id="${escapeHtml(tapa.id)}" data-establishment-id="${escapeHtml(venue.id)}">${escapeHtml(text(tapa.name_en, tapa.name_es))}${props.wantedTapas[tapa.id] ? ' <span class="festival-map-popup__wanted" aria-hidden="true">★</span>' : ''}</button></li>`).join('')}</ul>`
     : `<p>${escapeHtml(t('noPublishedTapas'))}</p>`;
-  return `<div class="festival-map-popup-content"><h3><button type="button" class="festival-map-popup__establishment-link" data-popup-establishment-id="${escapeHtml(venue.id)}">${escapeHtml(venue.name)}</button></h3>${tapaList}</div>`;
+  return `<div class="festival-map-popup-content"><h3><button type="button" class="festival-map-popup__establishment-link" data-popup-establishment-id="${escapeHtml(venue.id)}">${escapeHtml(venue.name)}</button></h3><p class="festival-map-popup__hours-status">${escapeHtml(venueHoursLabel(venue))}</p>${tapaList}</div>`;
 }
 function attachPopupTapaHandlers(popup: L.Popup) {
   const element = popup.getElement();
@@ -163,13 +166,19 @@ function venueHasWantedTapa(venueId: string) {
   return props.tapas.some((tapa) => tapa.establishment_id === venueId && Boolean(props.wantedTapas[tapa.id]));
 }
 function clusterIcon(cluster: L.MarkerCluster) {
-  const containsRatedVenue = cluster.getAllChildMarkers().some((marker) => {
+  const childMarkers = cluster.getAllChildMarkers();
+  const containsRatedVenue = childMarkers.some((marker) => {
     const venueId = (marker.options as any).festivalVenueId as string | undefined;
     return Boolean(venueId && venueHasRatedTapa(venueId));
   });
+  const containsOpenVenue = !props.openNowOnly || childMarkers.some((marker) => {
+    const venueId = (marker.options as any).festivalVenueId as string | undefined;
+    const venue = venueId ? props.establishments.find((item) => item.id === venueId) : null;
+    return Boolean(venue && openingHoursStatus(venue.opening_hours, openingHoursNow.value) === 'open');
+  });
   return L.divIcon({
     className: 'festival-cluster-wrapper',
-    html: `<div class="festival-cluster${containsRatedVenue ? ' festival-cluster--rated' : ''}">${cluster.getChildCount()}</div>`,
+    html: `<div class="festival-cluster${containsRatedVenue ? ' festival-cluster--rated' : ''}${!containsOpenVenue ? ' festival-cluster--hours-faded' : ''}">${cluster.getChildCount()}</div>`,
     iconSize: [42, 42],
     iconAnchor: [21, 21],
   });
@@ -178,9 +187,10 @@ function markerIcon(venue: Establishment) {
   const unavailable = venue.participation_status === 'withdrawn' || (venue.closure_status && venue.closure_status !== 'normal');
   const wanted = venueHasWantedTapa(venue.id);
   const selected = props.selectedEstablishmentId === venue.id;
+  const hoursFaded = props.openNowOnly && openingHoursStatus(venue.opening_hours, openingHoursNow.value) !== 'open';
   return L.divIcon({
     className: 'festival-marker-wrapper',
-    html: `<div class="festival-marker${unavailable ? ' festival-marker--unavailable' : ''}${unavailable ? '' : reviewMarkerClass(venue.id)}${selected ? ' festival-marker--selected' : ''}"${unavailable ? '' : reviewMarkerStyle(venue.id)}>●${wanted ? '<span class="festival-marker__wanted" aria-hidden="true">★</span>' : ''}</div>`,
+    html: `<div class="festival-marker${unavailable ? ' festival-marker--unavailable' : ''}${unavailable ? '' : reviewMarkerClass(venue.id)}${selected ? ' festival-marker--selected' : ''}${hoursFaded ? ' festival-marker--hours-faded' : ''}"${unavailable ? '' : reviewMarkerStyle(venue.id)}>●${wanted ? '<span class="festival-marker__wanted" aria-hidden="true">★</span>' : ''}</div>`,
     iconSize: [30, 30],
     iconAnchor: [15, 15],
     popupAnchor: [0, -15],
@@ -336,8 +346,9 @@ onUnmounted(() => {
   markers = null;
   map = null;
 });
-watch(() => [props.establishments, props.tapas, props.stats, props.myReviews, props.wantedTapas], () => updateMarkers(false), { deep: true });
+watch(() => [props.establishments, props.tapas, props.stats, props.myReviews, props.wantedTapas, props.openNowOnly], () => updateMarkers(false), { deep: true });
 watch(language, () => { updateMarkers(false); updateRotationControl(); });
+watch(openingHoursNow, () => { updateMarkers(false); if (selectedMarker && props.selectedEstablishmentId) { const venue = props.establishments.find((item) => item.id === props.selectedEstablishmentId); if (venue) selectedMarker.setPopupContent(popupHtml(venue)); } });
 watch(() => props.selectedEstablishmentId, () => {
   updateMarkers(false);
   nextTick(focusSelectedVenue);
@@ -353,9 +364,17 @@ watch(() => props.locationActive, (active) => { if (active) startLocationTrackin
 </template>
 
 <style>
+.leaflet-control-zoom { overflow: hidden; border: 2px solid #1c1917 !important; border-radius: .5rem !important; background: #fff; box-shadow: 0 2px 8px rgb(0 0 0 / .35); }
+.leaflet-control-zoom a { width: 30px !important; height: 30px !important; border: 0 !important; border-bottom: 1px solid #a8a29e !important; background: #fff !important; color: #1c1917 !important; font-size: 1.35rem !important; font-weight: 800 !important; line-height: 28px !important; }
+.leaflet-control-zoom a:last-child { border-bottom: 0 !important; }
+.leaflet-control-zoom a:hover, .leaflet-control-zoom a:focus-visible { background: #d1fae5 !important; color: #064e3b !important; outline: 3px solid #10b981; outline-offset: -3px; }
+:root[data-theme='dark'] .leaflet-control-zoom { border-color: #e7e5e4 !important; background: #1c1917; box-shadow: 0 2px 10px rgb(0 0 0 / .65); }
+:root[data-theme='dark'] .leaflet-control-zoom a { border-bottom-color: #57534e !important; background: #292524 !important; color: #f5f5f4 !important; }
+:root[data-theme='dark'] .leaflet-control-zoom a:hover, :root[data-theme='dark'] .leaflet-control-zoom a:focus-visible { background: #14532d !important; color: #ecfdf5 !important; outline-color: #6ee7b7; }
 .festival-cluster-wrapper { background: transparent; border: 0; }
 .festival-cluster { display: grid; width: 42px; height: 42px; place-items: center; border: 3px solid white; border-radius: 9999px; background: #047857; color: white; box-shadow: 0 2px 8px rgb(0 0 0 / .32); font-size: .9rem; font-weight: 800; }
 .festival-cluster--rated { background: #d97706; }
+.festival-cluster--hours-faded { opacity: .35; }
 .festival-user-location-wrapper { background: transparent; border: 0; }
 .festival-user-location { width: 22px; height: 22px; border: 4px solid white; border-radius: 9999px; background: #2563eb; box-shadow: 0 1px 7px rgb(0 0 0 / .4); }
 .festival-marker-wrapper { background: transparent; border: 0; }
@@ -363,6 +382,7 @@ watch(() => props.locationActive, (active) => { if (active) startLocationTrackin
 .festival-marker--unavailable { background: #1c1917; color: #1c1917; }
 .festival-marker--rated { background: #d97706; color: #d97706; }
 .festival-marker--partial { background: linear-gradient(90deg, #d97706 0 var(--reviewed-percent), #047857 var(--reviewed-percent) 100%); color: transparent; }
+.festival-marker--hours-faded { opacity: .35; }
 .festival-marker--selected { background: #7c3aed; color: #7c3aed; box-shadow: 0 0 0 5px rgb(124 58 237 / .35), 0 3px 10px rgb(0 0 0 / .45); transform: scale(1.18); }
 .festival-rotation-control { display: flex; overflow: hidden; border: 1px solid rgb(41 37 36 / .25); border-radius: .5rem; background: white; box-shadow: 0 2px 8px rgb(0 0 0 / .22); }
 .festival-rotation-control__button { display: grid; width: 2.5rem; height: 2.5rem; place-items: center; border: 0; border-right: 1px solid #d6d3d1; background: white; color: #1c1917; font-size: 1.1rem; font-weight: 800; line-height: 1; cursor: pointer; }
@@ -380,6 +400,7 @@ watch(() => props.locationActive, (active) => { if (active) startLocationTrackin
 .leaflet-popup.festival-map-popup .leaflet-popup-tip { background: #fff !important; }
 .festival-map-popup-content { padding: .65rem .75rem; background: #fff; color: #1c1917; }
 .festival-map-popup-content h3 { margin: 0; color: #1c1917; font-size: .95rem; font-weight: 800; line-height: 1.25; }
+.festival-map-popup__hours-status { font-weight: 800; }
 .festival-map-popup-content p { margin: .35rem 0 0; color: #57534e; font-size: .78rem; }
 .festival-map-popup__tapas { display: grid; gap: .2rem; margin: .45rem 0 0; padding: 0; color: #292524; font-size: .8rem; line-height: 1.25; list-style: none; }
 .festival-map-popup__tapas li::before { content: '•'; margin-right: .35rem; color: #047857; }

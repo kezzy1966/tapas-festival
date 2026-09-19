@@ -1,18 +1,29 @@
 <script setup lang="ts">
-type Tab = 'festivals' | 'establishments' | 'tapas' | 'reports';
+type Tab = 'dashboard' | 'festivals' | 'establishments' | 'tapas' | 'reports' | 'reviews' | 'users' | 'administrators';
+type Administrator = { account_id: string; account: string; role: 'admin' | 'superuser'; added_at: string; status: string };
 type RatingActivity = { festival_id: string; user_label: string; tapa_rating_count: number; bar_rating_count: number; total_rating_count: number; tapa_ratings: Array<{ establishment_name: string; tapa_name: string; rating: number }>; bar_ratings: Array<{ establishment_name: string; rating: number }> };
+type RegisteredUser = { account_id: string; account: string; registered_at: string; last_festival_activity_at: string | null; tapa_rating_count: number; written_review_count: number; bar_rating_count: number; total_activity_count: number; status: string; total_count: number };
+type RegisteredUserActivity = { activity_kind: string; festival_name: string | null; establishment_name: string; tapa_name: string | null; rating: number | null; review_text: string | null; activity_at: string };
+type ModeratedReview = { review_id: string; created_at: string; user_label: string; establishment_name: string; tapa_name: string; rating: number | null; review_text: string; status: 'visible' | 'hidden'; total_count: number };
+type DashboardData = { headline: Record<string, number>; content: Record<string, number>; recent_activity: Array<{ time: string; type: string; user: string; establishment: string; tapa: string | null; rating: number | null }>; most_active_tapas: Array<{ tapa: string; establishment: string; new_ratings: number }> };
 
 const supabase = useSupabaseClient<any>() as any;
 const user = useSupabaseUser();
-const tab = ref<Tab>('festivals');
+const tab = ref<Tab>('dashboard');
+const dashboardLoading = ref(false);
+const dashboardError = ref('');
+const dashboard = ref<DashboardData>({ headline: {}, content: {}, recent_activity: [], most_active_tapas: [] });
 const loading = ref(false);
 const checkingAccess = ref(false);
 const isAdmin = ref(false);
+const isSuperuser = ref(false);
+const canBootstrapInitialSuperuser = ref(false);
 const saving = ref(false);
 const error = ref('');
 const notice = ref('');
 const email = ref('');
 const password = ref('');
+const passwordVisible = ref(false);
 const authMode = ref<'login' | 'signup'>('login');
 const authBusy = ref(false);
 const festivals = ref<any[]>([]);
@@ -30,9 +41,150 @@ const reportFestivalId = ref('');
 const reportUserLabel = ref('');
 const reportRatingType = ref<'all' | 'tapa' | 'bar'>('all');
 const expandedReportRows = ref<Record<string, boolean>>({});
+const administrators = ref<Administrator[]>([]);
+const administratorsLoading = ref(false);
+const administratorEmail = ref('');
+const administratorRole = ref<'admin' | 'superuser'>('admin');
+const administratorSaving = ref(false);
+const registeredUsers = ref<RegisteredUser[]>([]);
+const registeredUsersLoading = ref(false);
+const registeredUserQuery = ref('');
+const registeredUsersPage = ref(0);
+const registeredUsersTotal = ref(0);
+const promotableRegisteredUserIds = ref<Set<string>>(new Set());
+const registeredUserPromotionId = ref<string | null>(null);
+const selectedRegisteredUser = ref<RegisteredUser | null>(null);
+const registeredUserActivity = ref<RegisteredUserActivity[]>([]);
+const registeredUserActivityLoading = ref(false);
+const moderatedReviews = ref<ModeratedReview[]>([]);
+const moderatedReviewsLoading = ref(false);
+const reviewQuery = ref('');
+const reviewStatus = ref<'all' | 'visible' | 'hidden'>('all');
+const reviewPage = ref(0);
+const reviewTotal = ref(0);
+const reviewActionId = ref<string | null>(null);
+const bootstrapSaving = ref(false);
+const establishmentPhotoFile = ref<File | null>(null);
+const tapaPhotoFile = ref<File | null>(null);
+const establishmentPhotoPreview = ref('');
+const tapaPhotoPreview = ref('');
+const establishmentPhotoRemoveRequested = ref(false);
+const tapaPhotoRemoveRequested = ref(false);
+const PHOTO_BUCKET = 'festival-images';
+const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+const PHOTO_MAX_STORED_BYTES = 30 * 1024;
+const PHOTO_MAX_DIMENSION = 1600;
+const PHOTO_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+type EstablishmentAttentionFilter = "all" | "missing_photos" | "missing_hours";
+type TapaAttentionFilter = "all" | "missing_photos" | "withdrawn";
+const establishmentAttentionFilter = ref<EstablishmentAttentionFilter>("all");
+const tapaAttentionFilter = ref<TapaAttentionFilter>("all");
+type TapaRatingDetail = { programme_number: number | null; establishment_name: string; tapa_name: string; total_rating_count: number; average_rating: number | null; rating_1_19_count: number; rating_2_29_count: number; rating_3_39_count: number; rating_4_44_count: number; rating_45_50_count: number; user_label: string; rating: number | null; review_text: string | null; created_at: string | null };
+const detailTapaId = ref("");
+const detailRows = ref<TapaRatingDetail[]>([]);
+const detailLoading = ref(false);
+const detailSort = ref<"newest" | "rating">("newest");
+const reportTapas = computed(() => tapas.value.filter((tapa) => !reportFestivalId.value || establishments.value.find((venue) => venue.id === tapa.establishment_id)?.festival_id === reportFestivalId.value));
+const sortedDetailRows = computed(() => [...detailRows.value].sort((a, b) => detailSort.value === "rating" ? Number(b.rating ?? -1) - Number(a.rating ?? -1) || String(b.created_at || "").localeCompare(String(a.created_at || "")) : String(b.created_at || "").localeCompare(String(a.created_at || ""))));
+function missingPhoto(row: any) { return row?.photo_path == null || String(row.photo_path).trim() === ""; }
+function missingOpeningHours(row: any) { const hours = row?.opening_hours; return hours == null || (typeof hours === "object" && !Array.isArray(hours) && Object.keys(hours).length === 0); }
+const filteredEstablishments = computed(() => establishments.value.filter((row) => establishmentAttentionFilter.value === "missing_photos" ? missingPhoto(row) : establishmentAttentionFilter.value === "missing_hours" ? missingOpeningHours(row) : true));
+const filteredTapas = computed(() => tapas.value.filter((row) => tapaAttentionFilter.value === "missing_photos" ? missingPhoto(row) : tapaAttentionFilter.value === "withdrawn" ? row.participation_status === "withdrawn" : true));
+const establishmentAttentionLabel = computed(() => establishmentAttentionFilter.value === "missing_photos" ? "Missing photos" : establishmentAttentionFilter.value === "missing_hours" ? "Missing opening hours" : "All bars");
+const tapaAttentionLabel = computed(() => tapaAttentionFilter.value === "missing_photos" ? "Missing photos" : tapaAttentionFilter.value === "withdrawn" ? "Withdrawn" : "All tapas");
+function publicPhotoUrl(path: string | null | undefined) { return path ? supabase.storage.from(PHOTO_BUCKET).getPublicUrl(path).data.publicUrl : ''; }
+function validatePhotoFile(file: File | null) {
+  if (!file) return 'Choose an image first.';
+  if (!PHOTO_MIME_TYPES.includes(file.type)) return 'Use a JPEG, PNG, or WebP image.';
+  if (file.size > PHOTO_MAX_BYTES) return 'Images must be 5 MB or smaller.';
+  return '';
+}
+function managedPhotoPath(path: string | null | undefined) { return Boolean(path && /^(establishments|tapas)\//.test(path)); }
+function formatPhotoSize(bytes: number) { return bytes < 1024 ? bytes + ' B' : (bytes / 1024).toFixed(bytes < 10240 ? 1 : 0) + ' KB'; }
+function loadPhotoImage(file: File) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => { URL.revokeObjectURL(url); resolve(image); };
+    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error('The selected image could not be read.')); };
+    image.src = url;
+  });
+}
+function canvasBlob(canvas: HTMLCanvasElement, quality: number) {
+  return new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
+}
+async function processPhoto(file: File) {
+  const image = await loadPhotoImage(file);
+  const scale = Math.min(1, PHOTO_MAX_DIMENSION / Math.max(image.naturalWidth, image.naturalHeight));
+  const baseWidth = Math.max(1, Math.round(image.naturalWidth * scale));
+  const baseHeight = Math.max(1, Math.round(image.naturalHeight * scale));
+  const dimensions = [1, 0.875, 0.75, 0.625, 0.5, 0.4, 0.3, 0.225, 0.15];
+  const qualities = [0.92, 0.84, 0.76, 0.68, 0.6, 0.52, 0.44, 0.36, 0.28];
+  let best: { blob: Blob; width: number; height: number; score: number } | null = null;
+  for (const dimensionScale of dimensions) {
+    const width = Math.max(1, Math.round(baseWidth * dimensionScale));
+    const height = Math.max(1, Math.round(baseHeight * dimensionScale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Image processing is not available in this browser.');
+    context.drawImage(image, 0, 0, width, height);
+    for (const quality of qualities) {
+      const blob = await canvasBlob(canvas, quality);
+      if (!blob || blob.size > PHOTO_MAX_STORED_BYTES) continue;
+      const candidate = { blob, width, height, score: width * height * quality };
+      if (!best || candidate.score > best.score) best = candidate;
+    }
+  }
+  if (!best) throw new Error('This image could not be compressed to 30 KB while remaining usable.');
+  return { blob: best.blob, originalBytes: file.size, storedBytes: best.blob.size, width: best.width, height: best.height };
+}
+async function uploadPhoto(kind: 'establishments' | 'tapas', id: string, file: File) {
+  let processed: { blob: Blob; originalBytes: number; storedBytes: number };
+  try {
+    if (file.size <= PHOTO_MAX_STORED_BYTES) {
+      processed = { blob: file, originalBytes: file.size, storedBytes: file.size };
+    } else {
+      const compressed = await processPhoto(file);
+      processed = { blob: compressed.blob, originalBytes: compressed.originalBytes, storedBytes: compressed.storedBytes };
+    }
+  } catch (processingError: any) {
+    return { path: '', error: processingError?.message || 'Unable to process this image.', originalBytes: file.size, storedBytes: 0 };
+  }
+  if (processed.blob.size > PHOTO_MAX_STORED_BYTES) {
+    return { path: '', error: 'The image is still larger than 30 KB after processing and was not uploaded.', originalBytes: processed.originalBytes, storedBytes: processed.blob.size };
+  }
+  const isWebp = processed.blob.type === 'image/webp';
+  const extension = isWebp ? 'webp' : file.type === 'image/jpeg' ? 'jpg' : file.type === 'image/png' ? 'png' : 'webp';
+  const contentType = isWebp ? 'image/webp' : file.type;
+  const path = kind + '/' + id + '/' + crypto.randomUUID() + '.' + extension;
+  const { error: uploadError } = await supabase.storage.from(PHOTO_BUCKET).upload(path, processed.blob, { cacheControl: '3600', contentType, upsert: false });
+  return uploadError ? { path: '', error: uploadError.message, originalBytes: processed.originalBytes, storedBytes: processed.storedBytes } : { path, error: '', originalBytes: processed.originalBytes, storedBytes: processed.storedBytes };
+}
+async function removeManagedPhoto(path: string | null | undefined) {
+  if (!managedPhotoPath(path)) return '';
+  const { error: removeError } = await supabase.storage.from(PHOTO_BUCKET).remove([path as string]);
+  return removeError?.message || '';
+}
+function chooseEstablishmentPhoto(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0] || null;
+  const validationError = file ? validatePhotoFile(file) : '';
+  if (validationError) { error.value = validationError; input.value = ''; return; }
+  error.value = ''; establishmentPhotoFile.value = file; establishmentPhotoRemoveRequested.value = false; establishmentPhotoPreview.value = file ? URL.createObjectURL(file) : publicPhotoUrl(establishmentForm.value.photo_path);
+}
+function chooseTapaPhoto(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0] || null;
+  const validationError = file ? validatePhotoFile(file) : '';
+  if (validationError) { error.value = validationError; input.value = ''; return; }
+  error.value = ''; tapaPhotoFile.value = file; tapaPhotoRemoveRequested.value = false; tapaPhotoPreview.value = file ? URL.createObjectURL(file) : publicPhotoUrl(tapaForm.value.photo_path);
+}
+function requestEstablishmentPhotoRemoval() { if (!window.confirm('Remove this photo?')) return; establishmentPhotoFile.value = null; establishmentPhotoRemoveRequested.value = true; establishmentPhotoPreview.value = ''; }
+function requestTapaPhotoRemoval() { if (!window.confirm('Remove this photo?')) return; tapaPhotoFile.value = null; tapaPhotoRemoveRequested.value = true; tapaPhotoPreview.value = ''; }
 
-const blankFestival = () => ({ name_en: '', name_es: '', slug: '', start_date: '', end_date: '', city: '', default_tapa_price: '5.00', publication_status: 'draft', reviews_enabled: true, show_rankings: true });
-const blankEstablishment = () => ({ festival_id: '', name: '', description_en: '', description_es: '', address: '', coordinates: '', phone: '', instagram: '', whatsapp: '', facebook_url: '', website_url: '', hours_notes_en: '', hours_notes_es: '', is_published: false, participation_status: 'active', closure_status: 'normal' });
+const blankFestival = () => ({ name_en: '', name_es: '', slug: '', start_date: '', end_date: '', city: '', default_tapa_price: '5.00', publication_status: 'draft', reviews_enabled: true, show_rankings: true, show_total_rating_count: true });
+const blankEstablishment = () => ({ festival_id: '', name: '', description_en: '', description_es: '', address: '', coordinates: '', photo_path: '', phone: '', instagram: '', whatsapp: '', facebook_url: '', website_url: '', hours_notes_en: '', hours_notes_es: '', is_published: false, participation_status: 'active', closure_status: 'normal' });
 const blankTapa = () => ({ establishment_id: '', name_en: '', name_es: '', description_en: '', description_es: '', price_override: '', photo_path: '', festival_number: '', is_published: false, participation_status: 'active' });
 const festivalForm = ref(blankFestival());
 const establishmentForm = ref(blankEstablishment());
@@ -51,6 +203,30 @@ const reportSummary = computed(() => filteredReportRows.value.reduce((summary, r
   return summary;
 }, { users: 0, tapa: 0, bar: 0, total: 0 }));
 function reportRowKey(row: RatingActivity) { return `${row.festival_id}:${row.user_label}`; }
+function administratorRoleLabel(role: Administrator["role"]) { return role === "superuser" ? "Superadmin" : "Admin"; }
+function displayAdministratorMessage(message: string) { return message.replace(/superuser/gi, "Superadmin"); }
+function maskAdminIdentity(email: string | null | undefined) {
+  if (!email) return "Account";
+  const at = email.indexOf("@");
+  const username = at >= 0 ? email.slice(0, at) : email;
+  const domain = at >= 0 ? email.slice(at + 1) : "";
+  const domainParts = domain.split(".");
+  const suffixLength = domainParts.length > 2 && domainParts.at(-1)?.toLowerCase() === "uk" ? 2 : 1;
+  const suffix = domainParts.length > 1 ? "." + domainParts.slice(-suffixLength).join(".") : "";
+  const domainPrefix = suffix ? domain.slice(0, -suffix.length) : domain;
+  const hiddenIdentity = username + (domainPrefix ? "." : "") + domainPrefix;
+  return Array.from(hiddenIdentity, (character, index) => index < 6 || character === "." ? character : "?").join("") + suffix;
+}
+const currentAdminRoleLabel = computed(() => isSuperuser.value ? "Superadmin" : "Admin");
+const ADMIN_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function adminDateTimeLines(value: string | null | undefined) {
+  const date = new Date(value || "");
+  if (Number.isNaN(date.getTime())) return { date: "—", time: "—" };
+  const day = String(date.getDate()).padStart(2, "0");
+  const year = String(date.getFullYear()).slice(-2);
+  const time = [date.getHours(), date.getMinutes(), date.getSeconds()].map((part) => String(part).padStart(2, "0")).join(":");
+  return { date: day + ADMIN_MONTHS[date.getMonth()] + "'" + year, time };
+}
 function toggleReportRow(row: RatingActivity) { const key = reportRowKey(row); expandedReportRows.value[key] = !expandedReportRows.value[key]; }
 async function loadRatingActivity() {
   if (!isAdmin.value) return;
@@ -61,9 +237,188 @@ async function loadRatingActivity() {
   reportRows.value = (data || []) as RatingActivity[];
   expandedReportRows.value = {};
 }
+async function loadTapaRatingDetail() {
+  detailRows.value = [];
+  if (!isAdmin.value || !detailTapaId.value) return;
+  detailLoading.value = true; error.value = "";
+  const { data, error: detailError } = await db().rpc("tapa_rating_detail", { p_tapa_id: detailTapaId.value });
+  detailLoading.value = false;
+  if (detailError) { error.value = detailError.message; return; }
+  detailRows.value = (data || []) as TapaRatingDetail[];
+}
+
+async function loadDashboard() {
+  if (!isAdmin.value) return;
+  dashboardLoading.value = true; dashboardError.value = '';
+  const { data, error: dashboardRpcError } = await db().rpc('admin_dashboard');
+  dashboardLoading.value = false;
+  if (dashboardRpcError) { dashboardError.value = 'Dashboard data is not available yet. Apply the dashboard migration before using these totals.'; return; }
+  dashboard.value = { headline: data?.headline || {}, content: data?.content || {}, recent_activity: Array.isArray(data?.recent_activity) ? data.recent_activity : [], most_active_tapas: Array.isArray(data?.most_active_tapas) ? data.most_active_tapas : [] };
+}
+function dashboardCount(section: 'headline' | 'content', key: string) { return Number(dashboard.value[section]?.[key] || 0).toLocaleString(); }
+function dashboardDate(value: string) { return adminDateTimeLines(value); }
+
+async function loadModeratedReviews(page = reviewPage.value) {
+  if (!isAdmin.value) return;
+  moderatedReviewsLoading.value = true; error.value = '';
+  const { data, error: reviewsError } = await db().rpc('list_review_moderation', {
+    p_query: reviewQuery.value,
+    p_status: reviewStatus.value,
+    p_limit: 25,
+    p_offset: page * 25,
+  });
+  moderatedReviewsLoading.value = false;
+  if (reviewsError) { error.value = reviewsError.message; return; }
+  moderatedReviews.value = (data || []) as ModeratedReview[];
+  reviewTotal.value = Number(moderatedReviews.value[0]?.total_count || 0);
+  reviewPage.value = page;
+}
+
+async function searchModeratedReviews() { await loadModeratedReviews(0); }
+
+async function setReviewModeration(row: ModeratedReview, nextStatus: 'visible' | 'hidden') {
+  const action = nextStatus === 'hidden' ? 'Hide' : 'Restore';
+  if (!window.confirm(action + ' this review?')) return;
+  reviewActionId.value = row.review_id; error.value = ''; notice.value = '';
+  const { error: moderationError } = await db().rpc('set_review_moderation', {
+    p_review_id: row.review_id,
+    p_status: nextStatus,
+  });
+  reviewActionId.value = null;
+  if (moderationError) { error.value = moderationError.message; return; }
+  notice.value = nextStatus === 'hidden' ? 'Review hidden.' : 'Review restored.';
+  await loadModeratedReviews();
+}
+
+async function bootstrapInitialSuperuser() {
+  if (!window.confirm("This will make your current Admin account the initial Superadmin. Continue?")) return;
+  bootstrapSaving.value = true; error.value = ""; notice.value = "";
+
+  const { data: eligible, error: eligibilityError } = await db().rpc("can_bootstrap_initial_superuser");
+  if (eligibilityError) {
+    bootstrapSaving.value = false; await checkAccess(); error.value = eligibilityError.message; return;
+  }
+  if (eligible !== true) {
+    bootstrapSaving.value = false;
+    await checkAccess();
+    error.value = "Your current session is not eligible to become the initial Superadmin. Please sign out and sign back in with the existing Admin account.";
+    return;
+  }
+
+  const { error: bootstrapError } = await db().rpc("bootstrap_initial_superuser");
+  bootstrapSaving.value = false;
+  if (bootstrapError) { await checkAccess(); error.value = bootstrapError.message; return; }
+
+  await checkAccess();
+  if (!isSuperuser.value) {
+    error.value = "Superadmin activation could not be confirmed. Please refresh the page.";
+    return;
+  }
+  notice.value = "Your account is now a Superadmin.";
+  tab.value = "administrators";
+  await loadAdministrators();
+}
+
+async function loadAdministrators() {
+  if (!isSuperuser.value) return;
+  administratorsLoading.value = true; error.value = "";
+  const { data, error: administratorsError } = await db().rpc("list_administrators");
+  administratorsLoading.value = false;
+  if (administratorsError) { error.value = administratorsError.message; return; }
+  administrators.value = (data || []) as Administrator[];
+}
+
+async function loadRegisteredUsers(page = registeredUsersPage.value) {
+  if (!isAdmin.value) return;
+  registeredUsersLoading.value = true; error.value = ""; promotableRegisteredUserIds.value = new Set();
+  const { data, error: usersError } = await db().rpc("search_registered_users", { p_query: registeredUserQuery.value, p_limit: 25, p_offset: page * 25 });
+  registeredUsersLoading.value = false;
+  if (usersError) { error.value = usersError.message; return; }
+  registeredUsers.value = (data || []) as RegisteredUser[];
+  registeredUsersTotal.value = registeredUsers.value[0]?.total_count || 0;
+  registeredUsersPage.value = page;
+  selectedRegisteredUser.value = null;
+  registeredUserActivity.value = [];
+  await loadPromotableRegisteredUsers();
+}
+
+async function searchRegisteredUsers() { await loadRegisteredUsers(0); }
+
+async function loadPromotableRegisteredUsers() {
+  promotableRegisteredUserIds.value = new Set();
+  if (!isSuperuser.value || !registeredUsers.value.length) return;
+  const { data, error: promotableError } = await db().rpc("list_promotable_registered_users", { p_account_ids: registeredUsers.value.map((row) => row.account_id) });
+  if (promotableError) { error.value = promotableError.message; return; }
+  promotableRegisteredUserIds.value = new Set((data || []).map((row: { account_id: string }) => row.account_id));
+}
+
+async function toggleRegisteredUserActivity(row: RegisteredUser) {
+  if (selectedRegisteredUser.value?.account_id === row.account_id) {
+    selectedRegisteredUser.value = null;
+    registeredUserActivity.value = [];
+    return;
+  }
+  selectedRegisteredUser.value = row;
+  registeredUserActivity.value = [];
+  registeredUserActivityLoading.value = true; error.value = "";
+  const { data, error: activityError } = await db().rpc("registered_user_activity", { p_account_id: row.account_id });
+  registeredUserActivityLoading.value = false;
+  if (activityError) { error.value = activityError.message; selectedRegisteredUser.value = null; return; }
+  registeredUserActivity.value = (data || []) as RegisteredUserActivity[];
+}
+
+async function promoteRegisteredUser(row: RegisteredUser, role: "admin" | "superuser") {
+  const roleLabel = role === "superuser" ? "Superadmin" : "Admin";
+  if (!window.confirm("Promote " + row.account + " to " + roleLabel + "?")) return;
+  registeredUserPromotionId.value = row.account_id; error.value = ""; notice.value = "";
+  const { error: promotionError } = await db().rpc("add_administrator_by_account_id", { p_account_id: row.account_id, p_role: role });
+  registeredUserPromotionId.value = null;
+  if (promotionError) { error.value = displayAdministratorMessage(promotionError.message); await loadPromotableRegisteredUsers(); return; }
+  notice.value = row.account + " is now an " + roleLabel + ".";
+  await Promise.all([loadRegisteredUsers(), loadAdministrators()]);
+}
+
+async function addAdministrator() {
+  administratorSaving.value = true; error.value = ""; notice.value = "";
+  const { error: addError } = await db().rpc("add_administrator", { p_email: administratorEmail.value, p_role: administratorRole.value });
+  administratorSaving.value = false;
+  if (addError) { error.value = addError.message; return; }
+  notice.value = "Administrator added."; administratorEmail.value = ""; administratorRole.value = "admin";
+  await loadAdministrators();
+}
+
+async function changeAdministratorRole(row: Administrator, role: "admin" | "superuser") {
+  const action = role === "superuser" ? "promote" : "demote";
+  if (!window.confirm("Are you sure you want to " + action + " " + row.account + "?")) return;
+  administratorSaving.value = true; error.value = ""; notice.value = "";
+  const { error: roleError } = await db().rpc("set_administrator_role", { p_account_id: row.account_id, p_new_role: role });
+  administratorSaving.value = false;
+  if (roleError) { error.value = roleError.message; return; }
+  notice.value = "Administrator " + action + "d."; await loadAdministrators();
+}
+
+async function removeAdministrator(row: Administrator) {
+  if (!window.confirm("Remove administrator privileges from " + row.account + "?")) return;
+  administratorSaving.value = true; error.value = ""; notice.value = "";
+  const { error: removeError } = await db().rpc("remove_administrator", { p_account_id: row.account_id });
+  administratorSaving.value = false;
+  if (removeError) { error.value = removeError.message; return; }
+  notice.value = "Administrator removed."; await loadAdministrators();
+}
+
+function adminTabLabel(value: Tab) { return ({ dashboard: 'Dashboard', festivals: 'Festival', establishments: 'Bars', tapas: 'Tapas', reviews: 'Reviews', users: 'Users', reports: 'Reports', administrators: 'Administrators' } as Record<Tab, string>)[value]; }
+function openEstablishmentAttentionFilter(filter: EstablishmentAttentionFilter) { establishmentAttentionFilter.value = filter; selectTab("establishments"); }
+function openTapaAttentionFilter(filter: TapaAttentionFilter) { tapaAttentionFilter.value = filter; selectTab("tapas"); }
+function openHiddenReviews() { reviewStatus.value = "hidden"; reviewPage.value = 0; selectTab("reviews"); }
+function clearEstablishmentAttentionFilter() { establishmentAttentionFilter.value = "all"; }
+function clearTapaAttentionFilter() { tapaAttentionFilter.value = "all"; }
 function selectTab(nextTab: Tab) {
   tab.value = nextTab;
+  if (nextTab === 'dashboard') void loadDashboard();
   if (nextTab === 'reports') void loadRatingActivity();
+  if (nextTab === 'reviews') void loadModeratedReviews();
+  if (nextTab === 'users') void loadRegisteredUsers();
+  if (nextTab === 'administrators') void loadAdministrators();
 }
 const valueOrNull = (value: string) => value.trim() || null;
 const numberOrNull = (value: string) => value === '' ? null : Number(value);
@@ -91,14 +446,16 @@ async function load() {
 
 async function checkAccess() {
   isAdmin.value = false;
+  isSuperuser.value = false;
+  canBootstrapInitialSuperuser.value = false;
   if (!user.value) return;
   checkingAccess.value = true;
   error.value = '';
-  const { data, error: rpcError } = await db().rpc('is_current_admin');
-  if (rpcError) error.value = rpcError.message;
-  else isAdmin.value = data === true;
+  const [adminResult, superuserResult, bootstrapResult] = await Promise.all([db().rpc('is_current_admin'), db().rpc('is_current_superuser'), db().rpc('can_bootstrap_initial_superuser')]);
+  if (adminResult.error || superuserResult.error || bootstrapResult.error) error.value = adminResult.error?.message || superuserResult.error?.message || bootstrapResult.error?.message || 'Unable to check access.';
+  else { isAdmin.value = adminResult.data === true; isSuperuser.value = superuserResult.data === true; canBootstrapInitialSuperuser.value = bootstrapResult.data === true; }
   checkingAccess.value = false;
-  if (isAdmin.value) await load();
+  if (isAdmin.value) { await load(); if (tab.value === 'dashboard') await loadDashboard(); }
 }
 
 function validateCredentials() {
@@ -141,16 +498,16 @@ function updateGeneratedSlug() {
   if (!slugManuallyEdited.value) festivalForm.value.slug = slugify(festivalForm.value.name_en);
 }
 function markSlugManual() { slugManuallyEdited.value = true; }
-function resetEstablishment() { editingEstablishment.value = null; establishmentForm.value = blankEstablishment(); }
-function resetTapa() { editingTapa.value = null; tapaForm.value = blankTapa(); }
-function editFestival(row: any) { editingFestival.value = row; slugManuallyEdited.value = true; festivalForm.value = { ...row, default_tapa_price: String(row.default_tapa_price), show_rankings: row.show_rankings !== false }; tab.value = 'festivals'; }
+function resetEstablishment() { editingEstablishment.value = null; establishmentForm.value = blankEstablishment(); establishmentPhotoFile.value = null; establishmentPhotoPreview.value = ''; establishmentPhotoRemoveRequested.value = false; }
+function resetTapa() { editingTapa.value = null; tapaForm.value = blankTapa(); tapaPhotoFile.value = null; tapaPhotoPreview.value = ''; tapaPhotoRemoveRequested.value = false; }
+function editFestival(row: any) { editingFestival.value = row; slugManuallyEdited.value = true; festivalForm.value = { ...row, default_tapa_price: String(row.default_tapa_price), show_rankings: row.show_rankings !== false, show_total_rating_count: row.show_total_rating_count !== false }; tab.value = 'festivals'; }
 function instagramFor(establishmentId: string) {
   const definition = fieldDefinitions.value.find((item) => item.festival_id === establishments.value.find((venue) => venue.id === establishmentId)?.festival_id);
   const value = definition && fieldValues.value.find((item) => item.field_definition_id === definition.id && item.establishment_id === establishmentId)?.value;
   return typeof value?.en === 'string' ? value.en : '';
 }
-function editEstablishment(row: any) { editingEstablishment.value = row; establishmentForm.value = { ...blankEstablishment(), ...row, instagram: instagramFor(row.id), coordinates: row.latitude == null || row.longitude == null ? '' : `${row.latitude}, ${row.longitude}` }; tab.value = 'establishments'; }
-function editTapa(row: any) { editingTapa.value = row; tapaForm.value = { ...blankTapa(), ...row, price_override: row.price_override == null ? '' : String(row.price_override), festival_number: row.festival_number == null ? '' : String(row.festival_number) }; tab.value = 'tapas'; }
+function editEstablishment(row: any) { editingEstablishment.value = row; establishmentForm.value = { ...blankEstablishment(), ...row, instagram: instagramFor(row.id), coordinates: row.latitude == null || row.longitude == null ? '' : `${row.latitude}, ${row.longitude}` }; establishmentPhotoFile.value = null; establishmentPhotoRemoveRequested.value = false; establishmentPhotoPreview.value = publicPhotoUrl(row.photo_path); tab.value = 'establishments'; }
+function editTapa(row: any) { editingTapa.value = row; tapaForm.value = { ...blankTapa(), ...row, price_override: row.price_override == null ? '' : String(row.price_override), festival_number: row.festival_number == null ? '' : String(row.festival_number) }; tapaPhotoFile.value = null; tapaPhotoRemoveRequested.value = false; tapaPhotoPreview.value = publicPhotoUrl(row.photo_path); tab.value = 'tapas'; }
 
 async function saveFestival() {
   saving.value = true; error.value = ''; notice.value = '';
@@ -175,28 +532,44 @@ async function saveEstablishment() {
   const f = establishmentForm.value;
   const coordinates = parseCoordinates(f.coordinates);
   if ('error' in coordinates) { error.value = coordinates.error; saving.value = false; return; }
-  const { coordinates: _coordinates, instagram: _instagram, ...formValues } = f;
-  const payload = { ...formValues, description_en: valueOrNull(f.description_en), description_es: valueOrNull(f.description_es), address: valueOrNull(f.address), latitude: coordinates.latitude, longitude: coordinates.longitude, phone: valueOrNull(f.phone), whatsapp: valueOrNull(f.whatsapp), facebook_url: valueOrNull(f.facebook_url), website_url: valueOrNull(f.website_url), hours_notes_en: valueOrNull(f.hours_notes_en), hours_notes_es: valueOrNull(f.hours_notes_es) };
+  const previousPath = editingEstablishment.value?.photo_path || null;
+  const { coordinates: _coordinates, instagram: _instagram, photo_path: _photoPath, ...formValues } = f;
+  const payload = { ...formValues, photo_path: establishmentPhotoRemoveRequested.value ? null : previousPath, description_en: valueOrNull(f.description_en), description_es: valueOrNull(f.description_es), address: valueOrNull(f.address), latitude: coordinates.latitude, longitude: coordinates.longitude, phone: valueOrNull(f.phone), whatsapp: valueOrNull(f.whatsapp), facebook_url: valueOrNull(f.facebook_url), website_url: valueOrNull(f.website_url), hours_notes_en: valueOrNull(f.hours_notes_en), hours_notes_es: valueOrNull(f.hours_notes_es) };
   const result = editingEstablishment.value
     ? await db().from('establishments').update(payload).eq('id', editingEstablishment.value.id).select().single()
     : await db().from('establishments').insert(payload).select().single();
   if (result.error || !result.data) { saving.value = false; error.value = result.error?.message || 'Unable to save establishment.'; return; }
+  const savedRow = result.data;
+  let finalPath = payload.photo_path;
+  if (establishmentPhotoFile.value) {
+    const uploadResult = await uploadPhoto('establishments', savedRow.id, establishmentPhotoFile.value);
+    if (uploadResult.error) { saving.value = false; error.value = uploadResult.error; return; }
+    const photoResult = await db().from('establishments').update({ photo_path: uploadResult.path }).eq('id', savedRow.id);
+    if (photoResult.error) { await removeManagedPhoto(uploadResult.path); saving.value = false; error.value = photoResult.error.message; return; }
+    finalPath = uploadResult.path;
+    notice.value = 'Photo optimized: ' + formatPhotoSize(uploadResult.originalBytes) + ' → uploaded ' + formatPhotoSize(uploadResult.storedBytes) + '.';
+  }
+  if (previousPath && previousPath !== finalPath) {
+    const removeError = await removeManagedPhoto(previousPath);
+    if (removeError) notice.value = 'Establishment saved, but the previous image could not be removed.';
+  }
   const instagram = valueOrNull(f.instagram);
   if (instagram) {
-    let definition = fieldDefinitions.value.find((item) => item.festival_id === result.data.festival_id);
+    let definition = fieldDefinitions.value.find((item) => item.festival_id === savedRow.festival_id);
     if (!definition) {
-      const definitionResult = await db().from('field_definitions').insert({ festival_id: result.data.festival_id, key: 'instagram', label_en: 'Instagram', label_es: 'Instagram', field_type: 'text', applies_to: 'establishment', required: false, active: true, sort_order: 0 }).select().single();
+      const definitionResult = await db().from('field_definitions').insert({ festival_id: savedRow.festival_id, key: 'instagram', label_en: 'Instagram', label_es: 'Instagram', field_type: 'text', applies_to: 'establishment', required: false, active: true, sort_order: 0 }).select().single();
       if (definitionResult.error || !definitionResult.data) { saving.value = false; error.value = definitionResult.error?.message || 'Unable to create the Instagram field.'; return; }
       definition = definitionResult.data;
     }
-    const existingValue = fieldValues.value.find((item) => item.field_definition_id === definition.id && item.establishment_id === result.data.id);
+    const existingValue = fieldValues.value.find((item) => item.field_definition_id === definition.id && item.establishment_id === savedRow.id);
     const instagramResult = existingValue
       ? await db().from('field_values').update({ value: { en: instagram } }).eq('id', existingValue.id)
-      : await db().from('field_values').insert({ field_definition_id: definition.id, establishment_id: result.data.id, value: { en: instagram } });
+      : await db().from('field_values').insert({ field_definition_id: definition.id, establishment_id: savedRow.id, value: { en: instagram } });
     if (instagramResult.error) { saving.value = false; error.value = instagramResult.error.message; return; }
   }
   saving.value = false;
-  notice.value = 'Establishment saved.'; resetEstablishment(); await load();
+  if (notice.value) notice.value += ' Establishment saved.'; else notice.value = 'Establishment saved.';
+  resetEstablishment(); await load();
 }
 async function saveTapa() {
   saving.value = true; error.value = ''; notice.value = '';
@@ -206,13 +579,40 @@ async function saveTapa() {
   const programmeNumber = numberOrNull(f.festival_number);
   const duplicate = programmeNumber != null && tapas.value.find((item) => item.id !== editingTapa.value?.id && item.festival_number === programmeNumber && establishments.value.find((venue) => venue.id === item.establishment_id)?.festival_id === festivalId);
   if (duplicate) { saving.value = false; error.value = `Programme number ${programmeNumber} is already used in this festival.`; return; }
-  const payload = { ...f, name_en: valueOrNull(f.name_en), name_es: valueOrNull(f.name_es), description_en: valueOrNull(f.description_en), description_es: valueOrNull(f.description_es), photo_path: valueOrNull(f.photo_path), price_override: numberOrNull(f.price_override), festival_number: programmeNumber };
-  const result = editingTapa.value ? await db().from('tapas').update(payload).eq('id', editingTapa.value.id) : await db().from('tapas').insert(payload);
+  const previousPath = editingTapa.value?.photo_path || null;
+  const payload = { ...f, name_en: valueOrNull(f.name_en), name_es: valueOrNull(f.name_es), description_en: valueOrNull(f.description_en), description_es: valueOrNull(f.description_es), photo_path: tapaPhotoRemoveRequested.value ? null : previousPath, price_override: numberOrNull(f.price_override), festival_number: programmeNumber };
+  const result = editingTapa.value ? await db().from('tapas').update(payload).eq('id', editingTapa.value.id).select().single() : await db().from('tapas').insert(payload).select().single();
+  if (result.error || !result.data) { saving.value = false; error.value = result.error?.message || 'Unable to save tapa.'; return; }
+  const savedRow = result.data;
+  let finalPath = payload.photo_path;
+  if (tapaPhotoFile.value) {
+    const uploadResult = await uploadPhoto('tapas', savedRow.id, tapaPhotoFile.value);
+    if (uploadResult.error) { saving.value = false; error.value = uploadResult.error; return; }
+    const photoResult = await db().from('tapas').update({ photo_path: uploadResult.path }).eq('id', savedRow.id);
+    if (photoResult.error) { await removeManagedPhoto(uploadResult.path); saving.value = false; error.value = photoResult.error.message; return; }
+    finalPath = uploadResult.path;
+    notice.value = 'Photo optimized: ' + formatPhotoSize(uploadResult.originalBytes) + ' → uploaded ' + formatPhotoSize(uploadResult.storedBytes) + '.';
+  }
+  if (previousPath && previousPath !== finalPath) {
+    const removeError = await removeManagedPhoto(previousPath);
+    if (removeError) notice.value = 'Tapa saved, but the previous image could not be removed.';
+  }
   saving.value = false;
-  if (result.error) error.value = result.error.message; else { notice.value = 'Tapa saved.'; resetTapa(); await load(); }
+  if (notice.value) notice.value += ' Tapa saved.'; else notice.value = 'Tapa saved.';
+  resetTapa(); await load();
 }
 
-watch(user, checkAccess, { immediate: true });
+watch(isSuperuser, (superuser) => {
+  if (superuser && registeredUsers.value.length) void loadPromotableRegisteredUsers();
+  if (!superuser) promotableRegisteredUserIds.value = new Set();
+}, { immediate: true });
+
+watch(user, () => {
+  isAdmin.value = false;
+  isSuperuser.value = false;
+  canBootstrapInitialSuperuser.value = false;
+  void checkAccess();
+}, { immediate: true });
 </script>
 
 <template>
@@ -220,32 +620,44 @@ watch(user, checkAccess, { immediate: true });
     <div class="mx-auto max-w-7xl">
       <header class="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div><p class="text-sm font-semibold text-emerald-700">tapas-festival</p><h1 class="font-display text-3xl font-bold">Admin</h1></div>
-        <button v-if="user" class="rounded-lg border border-stone-300 px-3 py-2 text-sm" @click="logout">Log out</button>
+        <div class="flex flex-wrap items-center justify-end gap-3">
+          <div v-if="user && isAdmin && !checkingAccess" class="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 text-right text-sm text-stone-700"><span class="font-semibold">Logged in as:</span><span class="font-mono">{{ maskAdminIdentity(user.email) }}</span><span aria-hidden="true">—</span><span class="font-semibold">{{ currentAdminRoleLabel }}</span></div>
+          <button v-if="user" class="rounded-lg border border-stone-300 px-3 py-2 text-sm" @click="logout">Log out</button>
+        </div>
       </header>
 
       <section v-if="!user" class="mx-auto max-w-md rounded-xl border border-stone-200 bg-white p-6 shadow-sm">
         <h2 class="text-xl font-bold">Admin access</h2><p class="mt-1 text-sm text-stone-600">Sign in, or create the first development account.</p>
-        <div class="mt-4 flex gap-2 border-b border-stone-200"><button type="button" class="border-b-2 px-3 py-2 text-sm font-semibold" :class="authMode === 'login' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="authMode = 'login'; error = ''; notice = ''">Sign in</button><button type="button" class="border-b-2 px-3 py-2 text-sm font-semibold" :class="authMode === 'signup' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="authMode = 'signup'; error = ''; notice = ''">Create account</button></div>
-        <p v-if="error" class="mt-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{{ error }}</p><p v-if="notice" class="mt-4 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{{ notice }}</p>
-        <form class="mt-5 space-y-3" @submit.prevent="authMode === 'login' ? login() : signup()"><input v-model="email" class="w-full rounded border p-2" type="email" autocomplete="email" placeholder="Email" required><input v-model="password" class="w-full rounded border p-2" type="password" autocomplete="current-password" placeholder="Password (8+ characters)" minlength="8" required><button class="w-full rounded bg-emerald-700 px-3 py-2 font-semibold text-white disabled:opacity-50" :disabled="authBusy">{{ authBusy ? 'Please wait…' : authMode === 'login' ? 'Log in' : 'Create account' }}</button></form>
+        <div class="mt-4 flex gap-2 border-b border-stone-200"><button type="button" class="border-b-2 px-3 py-2 text-sm font-semibold" :class="authMode === 'login' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="authMode = 'login'; passwordVisible = false; error = ''; notice = ''">Sign in</button><button type="button" class="border-b-2 px-3 py-2 text-sm font-semibold" :class="authMode === 'signup' ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="authMode = 'signup'; passwordVisible = false; error = ''; notice = ''">Create account</button></div>
+        <p v-if="error" class="mt-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{{ displayAdministratorMessage(error) }}</p><p v-if="notice" class="mt-4 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{{ displayAdministratorMessage(notice) }}</p>
+        <form class="mt-5 space-y-3" @submit.prevent="authMode === 'login' ? login() : signup()"><input v-model="email" class="w-full rounded border p-2" type="email" autocomplete="email" placeholder="Email" required><div class="flex items-center gap-1"><input v-model="password" class="min-w-0 flex-1 rounded border p-2" :type="passwordVisible ? 'text' : 'password'" autocomplete="current-password" placeholder="Password (8+ characters)" minlength="8" required><button v-if="authMode === 'login'" type="button" class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded border border-stone-300 text-stone-600" :aria-label="passwordVisible ? 'Hide password' : 'Show password'" :title="passwordVisible ? 'Hide password' : 'Show password'" v-on:click="passwordVisible = !passwordVisible"><Icon :name="passwordVisible ? 'lucide:eye-off' : 'lucide:eye'" class="h-4 w-4" aria-hidden="true" /></button></div><button v-if="authMode === 'login'" type="button" class="text-left text-xs font-semibold text-emerald-700 hover:underline" v-on:click="openPasswordReset">Forgot password?</button><button class="w-full rounded bg-emerald-700 px-3 py-2 font-semibold text-white disabled:opacity-50" :disabled="authBusy">{{ authBusy ? 'Please wait…' : authMode === 'login' ? 'Log in' : 'Create account' }}</button></form>
       </section>
 
       <section v-else-if="checkingAccess" class="rounded-xl border border-stone-200 bg-white p-6 text-sm text-stone-600">Checking administrator access…</section>
       <section v-else-if="!isAdmin" class="rounded-xl border border-red-200 bg-red-50 p-6"><h2 class="text-xl font-bold text-red-900">Access denied</h2><p class="mt-1 text-sm text-red-800">This account is not an administrator.</p></section>
       <template v-else>
-        <p v-if="error" class="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{{ error }}</p>
-        <p v-if="notice" class="mb-4 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{{ notice }}</p>
-        <nav class="mb-6 flex gap-2 border-b border-stone-200"><button v-for="item in ['festivals','establishments','tapas','reports'] as Tab[]" :key="item" class="border-b-2 px-4 py-3 text-sm font-semibold capitalize" :class="tab === item ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="selectTab(item)">{{ item }}</button></nav>
-        <p v-if="loading" class="text-sm text-stone-500">Loading…</p>
+        <p v-if="error" class="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{{ displayAdministratorMessage(error) }}</p>
+        <p v-if="notice" class="mb-4 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{{ displayAdministratorMessage(notice) }}</p>
+        <section v-if="canBootstrapInitialSuperuser" class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><div><h2 class="font-bold text-amber-950">Initial Superadmin setup</h2><p class="mt-1 text-sm text-amber-900">This Admin account can establish the first Superadmin.</p></div><button type="button" class="rounded bg-amber-700 px-4 py-2 font-semibold text-white disabled:opacity-50" :disabled="bootstrapSaving" @click="bootstrapInitialSuperuser">{{ bootstrapSaving ? 'Please wait…' : 'Become initial Superadmin' }}</button></section>
+        <nav class="mb-6 flex gap-2 border-b border-stone-200"><button v-for="item in (isSuperuser ? ['dashboard','festivals','establishments','tapas','reviews','users','reports','administrators'] : ['dashboard','festivals','establishments','tapas','reviews','users','reports']) as Tab[]" :key="item" class="border-b-2 px-4 py-3 text-sm font-semibold capitalize" :class="tab === item ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="selectTab(item)">{{ adminTabLabel(item) }}</button></nav>
+        <p v-if="loading" class="text-sm text-stone-500">Loading...</p>
 
-        <section v-if="tab === 'festivals'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]"><div><h2 class="mb-3 text-xl font-bold">Festivals</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Dates</th><th class="p-3">Status</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in festivals" :key="row.id" class="border-t"><td class="p-3">{{ row.name_en || row.name_es }}</td><td class="p-3">{{ row.start_date }} – {{ row.end_date }}</td><td class="p-3">{{ row.publication_status }}</td><td class="p-3"><button class="text-emerald-700" @click="editFestival(row)">Edit</button></td></tr></tbody></table></div></div><form class="space-y-3 rounded-xl border bg-white p-5" @submit.prevent="saveFestival"><h2 class="text-lg font-bold">{{ editingFestival ? 'Edit festival' : 'New festival' }}</h2><input v-model="festivalForm.name_en" class="w-full rounded border p-2" placeholder="English name" required @input="updateGeneratedSlug"><input v-model="festivalForm.name_es" class="w-full rounded border p-2" placeholder="Spanish name"><input v-model="festivalForm.slug" class="w-full rounded border p-2" placeholder="slug" required @input="markSlugManual"><div class="grid grid-cols-2 gap-2"><input v-model="festivalForm.start_date" class="rounded border p-2" type="date" required><input v-model="festivalForm.end_date" class="rounded border p-2" type="date" required></div><input v-model="festivalForm.city" class="w-full rounded border p-2" placeholder="City" required><input v-model="festivalForm.default_tapa_price" class="w-full rounded border p-2" type="number" min="0" step="0.01" placeholder="Default price" required><select v-model="festivalForm.publication_status" class="w-full rounded border p-2"><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select><label class="flex gap-2 text-sm"><input v-model="festivalForm.reviews_enabled" type="checkbox"> Reviews enabled</label><label class="flex gap-2 text-sm"><input v-model="festivalForm.show_rankings" type="checkbox"> Show rankings</label><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetFestival">Clear</button></div></form></section>
+        <section v-if="tab === 'dashboard'" class="space-y-5">
+          <div class="flex flex-wrap items-end justify-between gap-3"><div><h2 class="text-xl font-bold">Dashboard</h2><p class="mt-1 text-sm text-stone-600">A quick view of festival activity and items needing attention.</p></div><button type="button" class="rounded border border-stone-300 px-3 py-2 text-sm font-semibold" :disabled="dashboardLoading" @click="loadDashboard">{{ dashboardLoading ? 'Loading...' : 'Refresh' }}</button></div>
+          <p v-if="dashboardError" class="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{{ dashboardError }}</p>
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><div class="rounded-xl border bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-stone-500">Registered users</p><p class="mt-1 text-2xl font-bold">{{ dashboardCount('headline', 'registered_users') }}</p></div><div class="rounded-xl border bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-stone-500">Tapa ratings</p><p class="mt-1 text-2xl font-bold">{{ dashboardCount('headline', 'tapa_ratings_total') }}</p><p class="text-xs text-stone-500">{{ dashboardCount('headline', 'tapa_ratings_24h') }} in last 24h</p></div><div class="rounded-xl border bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-stone-500">Written reviews</p><p class="mt-1 text-2xl font-bold">{{ dashboardCount('headline', 'written_reviews_total') }}</p><p class="text-xs text-stone-500">{{ dashboardCount('headline', 'written_reviews_24h') }} in last 24h</p></div><div class="rounded-xl border bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-stone-500">Bar ratings</p><p class="mt-1 text-2xl font-bold">{{ dashboardCount('headline', 'bar_ratings_total') }}</p><p class="text-xs text-stone-500">{{ dashboardCount('headline', 'bar_ratings_24h') }} in last 24h</p></div><div class="rounded-xl border bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-stone-500">Active users</p><p class="mt-1 text-2xl font-bold">{{ dashboardCount('headline', 'active_users_24h') }}</p><p class="text-xs text-stone-500">Any activity in last 24h</p></div></div>
+          <div class="grid gap-5 lg:grid-cols-[minmax(0,1.4fr)_minmax(320px,1fr)]"><section class="rounded-xl border bg-white p-4"><div class="flex items-center justify-between gap-3"><h3 class="font-bold">Recent activity</h3><span class="text-xs text-stone-500">Latest 15</span></div><div v-if="dashboard.recent_activity.length" class="mt-3 divide-y"><div v-for="(activity, index) in dashboard.recent_activity" :key="activity.time + activity.type + activity.user + index" class="grid gap-1 py-2 text-sm sm:grid-cols-[120px_minmax(0,1fr)_auto] sm:items-baseline"><span class="text-xs leading-tight text-stone-500"><span class="block whitespace-nowrap">{{ dashboardDate(activity.time).date }}</span><span class="block whitespace-nowrap">{{ dashboardDate(activity.time).time }}</span></span><span><strong>{{ activity.type }}</strong> - {{ activity.establishment }}<template v-if="activity.tapa"> - {{ activity.tapa }}</template><template v-if="activity.rating != null"> - {{ activity.rating }} stars</template></span><span class="font-mono text-xs text-stone-600">{{ activity.user }}</span></div></div><p v-else class="mt-3 text-sm text-stone-500">No recent activity.</p></section><section class="rounded-xl border bg-white p-4"><div class="flex items-center justify-between gap-3"><h3 class="font-bold">Most active tapas</h3><span class="text-xs text-stone-500">New ratings, 24h</span></div><ol v-if="dashboard.most_active_tapas.length" class="mt-3 space-y-2 text-sm"><li v-for="(item, index) in dashboard.most_active_tapas" :key="item.tapa + item.establishment" class="flex items-start justify-between gap-3"><span><strong>{{ index + 1 }}. {{ item.tapa }}</strong><span class="block text-xs text-stone-500">{{ item.establishment }}</span></span><span class="font-semibold">{{ item.new_ratings }}</span></li></ol><p v-else class="mt-3 text-sm text-stone-500">No new tapa ratings in the last 24 hours.</p></section></div>
+          <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,1fr)]"><section class="rounded-xl border bg-white p-4"><h3 class="font-bold">Needs attention</h3><ul class="mt-3 space-y-2 text-sm"><li v-if="Number(dashboard.content.hidden_reviews) > 0" class="flex items-center justify-between gap-3"><span>{{ dashboardCount('content', 'hidden_reviews') }} hidden written reviews</span><button type="button" class="font-semibold text-emerald-700 hover:underline" @click="openHiddenReviews">View Reviews</button></li><li v-if="Number(dashboard.content.withdrawn_tapas) > 0" class="flex items-center justify-between gap-3"><span>{{ dashboardCount('content', 'withdrawn_tapas') }} withdrawn tapas</span><button type="button" class="font-semibold text-emerald-700 hover:underline" @click="openTapaAttentionFilter('withdrawn')">View Tapas</button></li><li v-if="Number(dashboard.content.bars_missing_hours) > 0" class="flex items-center justify-between gap-3"><span>{{ dashboardCount('content', 'bars_missing_hours') }} bars missing opening hours</span><button type="button" class="font-semibold text-emerald-700 hover:underline" @click="openEstablishmentAttentionFilter('missing_hours')">View Bars</button></li><li v-if="Number(dashboard.content.bars_missing_photos) > 0" class="flex items-center justify-between gap-3"><span>{{ dashboardCount('content', 'bars_missing_photos') }} bars missing photos</span><button type="button" class="font-semibold text-emerald-700 hover:underline" @click="openEstablishmentAttentionFilter('missing_photos')">View Bars</button></li><li v-if="Number(dashboard.content.tapas_missing_photos) > 0" class="flex items-center justify-between gap-3"><span>{{ dashboardCount('content', 'tapas_missing_photos') }} tapas missing photos</span><button type="button" class="font-semibold text-emerald-700 hover:underline" @click="openTapaAttentionFilter('missing_photos')">View Tapas</button></li><li v-if="!Number(dashboard.content.hidden_reviews) && !Number(dashboard.content.withdrawn_tapas) && !Number(dashboard.content.bars_missing_hours) && !Number(dashboard.content.bars_missing_photos) && !Number(dashboard.content.tapas_missing_photos)" class="text-stone-500">Nothing needs attention.</li></ul></section><section class="rounded-xl border bg-white p-4"><h3 class="font-bold">Festival content</h3><dl class="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3"><div><dt class="text-stone-500">Bars</dt><dd class="text-lg font-bold">{{ dashboardCount('content', 'establishments') }}</dd></div><div><dt class="text-stone-500">Tapas</dt><dd class="text-lg font-bold">{{ dashboardCount('content', 'tapas') }}</dd></div><div><dt class="text-stone-500">Active tapas</dt><dd class="text-lg font-bold">{{ dashboardCount('content', 'active_tapas') }}</dd></div><div><dt class="text-stone-500">Withdrawn tapas</dt><dd class="text-lg font-bold">{{ dashboardCount('content', 'withdrawn_tapas') }}</dd></div><div><dt class="text-stone-500">Hidden reviews</dt><dd class="text-lg font-bold">{{ dashboardCount('content', 'hidden_reviews') }}</dd></div></dl></section></div>
+        </section>
+
+        <section v-if="tab === 'festivals'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]"><div><h2 class="mb-3 text-xl font-bold">Festivals</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Dates</th><th class="p-3">Status</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in festivals" :key="row.id" class="border-t"><td class="p-3">{{ row.name_en || row.name_es }}</td><td class="p-3">{{ row.start_date }} – {{ row.end_date }}</td><td class="p-3">{{ row.publication_status }}</td><td class="p-3"><button class="text-emerald-700" @click="editFestival(row)">Edit</button></td></tr></tbody></table></div></div><form class="space-y-3 rounded-xl border bg-white p-5" @submit.prevent="saveFestival"><h2 class="text-lg font-bold">{{ editingFestival ? 'Edit festival' : 'New festival' }}</h2><input v-model="festivalForm.name_en" class="w-full rounded border p-2" placeholder="English name" required @input="updateGeneratedSlug"><input v-model="festivalForm.name_es" class="w-full rounded border p-2" placeholder="Spanish name"><input v-model="festivalForm.slug" class="w-full rounded border p-2" placeholder="slug" required @input="markSlugManual"><div class="grid grid-cols-2 gap-2"><input v-model="festivalForm.start_date" class="rounded border p-2" type="date" required><input v-model="festivalForm.end_date" class="rounded border p-2" type="date" required></div><input v-model="festivalForm.city" class="w-full rounded border p-2" placeholder="City" required><input v-model="festivalForm.default_tapa_price" class="w-full rounded border p-2" type="number" min="0" step="0.01" placeholder="Default price" required><select v-model="festivalForm.publication_status" class="w-full rounded border p-2"><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select><label class="flex gap-2 text-sm"><input v-model="festivalForm.reviews_enabled" type="checkbox"> Reviews enabled</label><label class="flex gap-2 text-sm"><input v-model="festivalForm.show_rankings" type="checkbox"> Show rankings</label><label class="flex gap-2 text-sm"><input v-model="festivalForm.show_total_rating_count" type="checkbox"> Show total tapa ratings</label><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetFestival">Clear</button></div></form></section>
 
         <section v-if="tab === 'establishments'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_440px]">
-          <div><h2 class="mb-3 text-xl font-bold">Establishments</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Festival</th><th class="p-3">Status</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in establishments" :key="row.id" class="border-t"><td class="p-3">{{ row.name }}</td><td class="p-3">{{ festivals.find(f => f.id === row.festival_id)?.name_en || '—' }}</td><td class="p-3">{{ row.participation_status }}</td><td class="p-3"><button class="text-emerald-700" @click="editEstablishment(row)">Edit</button></td></tr></tbody></table></div></div>
+          <div><div class="mb-3 flex flex-wrap items-end justify-between gap-3"><div><h2 class="text-xl font-bold">Establishments</h2><p v-if="establishmentAttentionFilter !== 'all'" class="mt-1 text-sm text-stone-600">Filter: {{ establishmentAttentionLabel }} · {{ filteredEstablishments.length }} result{{ filteredEstablishments.length === 1 ? '' : 's' }}</p></div><button v-if="establishmentAttentionFilter !== 'all'" type="button" class="rounded border px-3 py-1.5 text-sm font-semibold" @click="clearEstablishmentAttentionFilter">Show all</button></div><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Address</th><th class="p-3">Festival</th><th class="p-3">Photo</th><th class="p-3">Hours</th><th class="p-3">Status</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in filteredEstablishments" :key="row.id" class="border-t"><td class="p-3 font-medium">{{ row.name }}</td><td class="p-3">{{ row.address || '—' }}</td><td class="p-3">{{ festivals.find(f => f.id === row.festival_id)?.name_en || '—' }}</td><td class="whitespace-nowrap p-3">{{ missingPhoto(row) ? 'Missing' : 'Present' }}</td><td class="whitespace-nowrap p-3">{{ missingOpeningHours(row) ? 'Missing' : 'Present' }}</td><td class="p-3">{{ row.participation_status }}</td><td class="p-3"><button class="font-semibold text-emerald-700" @click="editEstablishment(row)">Edit</button></td></tr><tr v-if="!filteredEstablishments.length"><td colspan="7" class="p-5 text-center text-stone-500">No bars match this filter.</td></tr></tbody></table></div></div>
           <form class="space-y-4 rounded-xl border bg-white p-5" @submit.prevent="saveEstablishment">
             <h2 class="text-lg font-bold">{{ editingEstablishment ? 'Edit establishment' : 'New establishment' }}</h2>
             <select v-model="establishmentForm.festival_id" class="w-full rounded border p-2" required><option value="" disabled>Festival</option><option v-for="f in festivals" :key="f.id" :value="f.id">{{ f.name_en || f.name_es }}</option></select>
-            <div class="grid gap-3 sm:grid-cols-2"><input v-model="establishmentForm.name" class="rounded border p-2 sm:col-span-2" placeholder="Name" required><input v-model="establishmentForm.address" class="rounded border p-2 sm:col-span-2" placeholder="Address"><label class="block text-sm font-medium text-stone-700 sm:col-span-2">Google Maps coordinates<input v-model="establishmentForm.coordinates" class="mt-1 w-full rounded border p-2 font-mono text-sm" type="text" inputmode="decimal" placeholder="39.979579659748154, -0.030992736520370705"></label><input v-model="establishmentForm.phone" class="rounded border p-2" placeholder="Phone"><input v-model="establishmentForm.instagram" class="rounded border p-2" placeholder="Instagram"><input v-model="establishmentForm.facebook_url" class="rounded border p-2" placeholder="Facebook URL"><input v-model="establishmentForm.whatsapp" class="rounded border p-2" placeholder="WhatsApp"><input v-model="establishmentForm.website_url" class="rounded border p-2 sm:col-span-2" placeholder="Website"></div>
+            <div class="grid gap-3 sm:grid-cols-2"><input v-model="establishmentForm.name" class="rounded border p-2 sm:col-span-2" placeholder="Name" required><input v-model="establishmentForm.address" class="rounded border p-2 sm:col-span-2" placeholder="Address"><label class="block text-sm font-medium text-stone-700 sm:col-span-2">Google Maps coordinates<input v-model="establishmentForm.coordinates" class="mt-1 w-full rounded border p-2 font-mono text-sm" type="text" inputmode="decimal" placeholder="39.979579659748154, -0.030992736520370705"></label><div class="sm:col-span-2 rounded border border-stone-200 p-3"><p class="text-sm font-semibold">Photo</p><div v-if="establishmentPhotoPreview" class="mt-2 flex flex-wrap items-center gap-3"><img :src="establishmentPhotoPreview" alt="Establishment preview" class="h-20 w-20 rounded object-cover"><button type="button" class="rounded border px-3 py-2 text-sm font-semibold" @click="requestEstablishmentPhotoRemoval">Remove photo</button></div><label class="mt-2 inline-flex cursor-pointer rounded border px-3 py-2 text-sm font-semibold"><span>{{ establishmentPhotoPreview ? "Replace photo" : "Choose photo / Upload photo" }}</span><input class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="chooseEstablishmentPhoto"></label><p class="mt-1 text-xs text-stone-500">JPEG, PNG or WebP · maximum 5 MB</p></div><input v-model="establishmentForm.phone" class="rounded border p-2" placeholder="Phone"><input v-model="establishmentForm.instagram" class="rounded border p-2" placeholder="Instagram"><input v-model="establishmentForm.facebook_url" class="rounded border p-2" placeholder="Facebook URL"><input v-model="establishmentForm.whatsapp" class="rounded border p-2" placeholder="WhatsApp"><input v-model="establishmentForm.website_url" class="rounded border p-2 sm:col-span-2" placeholder="Website"></div>
             <p class="text-xs text-stone-500">Paste latitude, longitude from Google Maps. Leave blank when no coordinates are available.</p>
             <textarea v-model="establishmentForm.hours_notes_en" class="w-full rounded border p-2" placeholder="Opening-hours notes (English)"/><textarea v-model="establishmentForm.hours_notes_es" class="w-full rounded border p-2" placeholder="Opening-hours notes (Spanish)"/>
             <details class="rounded border border-stone-200 p-3"><summary class="cursor-pointer text-sm font-semibold">Descriptions and closure details</summary><div class="mt-3 space-y-3"><textarea v-model="establishmentForm.description_en" class="w-full rounded border p-2" placeholder="English description"/><textarea v-model="establishmentForm.description_es" class="w-full rounded border p-2" placeholder="Spanish description"/><select v-model="establishmentForm.closure_status" class="w-full rounded border p-2"><option value="normal">Normal</option><option value="temporarily_closed">Temporarily closed</option><option value="permanently_closed">Permanently closed</option></select></div></details>
@@ -254,14 +666,66 @@ watch(user, checkAccess, { immediate: true });
         </section>
 
         <section v-if="tab === 'tapas'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_440px]">
-          <div><h2 class="mb-3 text-xl font-bold">Tapas</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Establishment</th><th class="p-3">Price</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in tapas" :key="row.id" class="border-t"><td class="p-3">{{ row.name_en || row.name_es }}</td><td class="p-3">{{ establishments.find(e => e.id === row.establishment_id)?.name || '—' }}</td><td class="p-3">{{ row.price_override ?? festivals.find(f => f.id === establishments.find(e => e.id === row.establishment_id)?.festival_id)?.default_tapa_price ?? '—' }}</td><td class="p-3"><button class="text-emerald-700" @click="editTapa(row)">Edit</button></td></tr></tbody></table></div></div>
-          <form class="space-y-4 rounded-xl border bg-white p-5" @submit.prevent="saveTapa"><h2 class="text-lg font-bold">{{ editingTapa ? 'Edit tapa' : 'New tapa' }}</h2><select v-model="tapaForm.establishment_id" class="w-full rounded border p-2" required><option value="" disabled>Establishment</option><option v-for="e in establishments" :key="e.id" :value="e.id">{{ e.name }}</option></select><div class="grid gap-3 sm:grid-cols-2"><input v-model="tapaForm.festival_number" class="rounded border p-2" type="number" min="1" placeholder="Programme number"><input v-model="tapaForm.price_override" class="rounded border p-2" type="number" min="0" step="0.01" placeholder="Price override (optional)"><input v-model="tapaForm.name_es" class="rounded border p-2 sm:col-span-2" placeholder="Spanish name"><input v-model="tapaForm.name_en" class="rounded border p-2 sm:col-span-2" placeholder="English name"><textarea v-model="tapaForm.description_es" class="min-h-24 rounded border p-2" placeholder="Spanish description"/><textarea v-model="tapaForm.description_en" class="min-h-24 rounded border p-2" placeholder="English description"/><input v-model="tapaForm.photo_path" class="rounded border p-2 sm:col-span-2" placeholder="Photo path (optional)"></div><p class="text-xs text-stone-500">Leave price blank to use the festival default. The photo path supports the existing Storage workflow.</p><div class="grid gap-3 sm:grid-cols-2"><label class="flex items-center gap-2 text-sm"><input v-model="tapaForm.is_published" type="checkbox"> Published</label><select v-model="tapaForm.participation_status" class="rounded border p-2"><option value="active">Active</option><option value="withdrawn">Withdrawn</option></select></div><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetTapa">Clear</button></div></form>
+          <div><div class="mb-3 flex flex-wrap items-end justify-between gap-3"><div><h2 class="text-xl font-bold">Tapas</h2><p v-if="tapaAttentionFilter !== 'all'" class="mt-1 text-sm text-stone-600">Filter: {{ tapaAttentionLabel }} · {{ filteredTapas.length }} result{{ filteredTapas.length === 1 ? '' : 's' }}</p></div><button v-if="tapaAttentionFilter !== 'all'" type="button" class="rounded border px-3 py-1.5 text-sm font-semibold" @click="clearTapaAttentionFilter">Show all</button></div><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Establishment</th><th class="p-3">Photo</th><th class="p-3">Participation</th><th class="p-3">Price</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in filteredTapas" :key="row.id" class="border-t"><td class="p-3 font-medium">{{ row.name_en || row.name_es }}</td><td class="p-3">{{ establishments.find(e => e.id === row.establishment_id)?.name || '—' }}</td><td class="whitespace-nowrap p-3">{{ missingPhoto(row) ? 'Missing' : 'Present' }}</td><td class="p-3">{{ row.participation_status }}</td><td class="p-3">{{ row.price_override ?? festivals.find(f => f.id === establishments.find(e => e.id === row.establishment_id)?.festival_id)?.default_tapa_price ?? '—' }}</td><td class="p-3"><button class="font-semibold text-emerald-700" @click="editTapa(row)">Edit</button></td></tr><tr v-if="!filteredTapas.length"><td colspan="6" class="p-5 text-center text-stone-500">No tapas match this filter.</td></tr></tbody></table></div></div>
+          <form class="space-y-4 rounded-xl border bg-white p-5" @submit.prevent="saveTapa"><h2 class="text-lg font-bold">{{ editingTapa ? 'Edit tapa' : 'New tapa' }}</h2><select v-model="tapaForm.establishment_id" class="w-full rounded border p-2" required><option value="" disabled>Establishment</option><option v-for="e in establishments" :key="e.id" :value="e.id">{{ e.name }}</option></select><div class="grid gap-3 sm:grid-cols-2"><input v-model="tapaForm.festival_number" class="rounded border p-2" type="number" min="1" placeholder="Programme number"><input v-model="tapaForm.price_override" class="rounded border p-2" type="number" min="0" step="0.01" placeholder="Price override (optional)"><input v-model="tapaForm.name_es" class="rounded border p-2 sm:col-span-2" placeholder="Spanish name"><input v-model="tapaForm.name_en" class="rounded border p-2 sm:col-span-2" placeholder="English name"><textarea v-model="tapaForm.description_es" class="min-h-24 rounded border p-2" placeholder="Spanish description"/><textarea v-model="tapaForm.description_en" class="min-h-24 rounded border p-2" placeholder="English description"/><div class="sm:col-span-2 rounded border border-stone-200 p-3"><p class="text-sm font-semibold">Photo</p><div v-if="tapaPhotoPreview" class="mt-2 flex flex-wrap items-center gap-3"><img :src="tapaPhotoPreview" alt="Tapa preview" class="h-20 w-20 rounded object-cover"><button type="button" class="rounded border px-3 py-2 text-sm font-semibold" @click="requestTapaPhotoRemoval">Remove photo</button></div><label class="mt-2 inline-flex cursor-pointer rounded border px-3 py-2 text-sm font-semibold"><span>{{ tapaPhotoPreview ? "Replace photo" : "Choose photo / Upload photo" }}</span><input class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="chooseTapaPhoto"></label><p class="mt-1 text-xs text-stone-500">JPEG, PNG or WebP · maximum 5 MB</p></div></div><p class="text-xs text-stone-500">Leave price blank to use the festival default.</p><div class="grid gap-3 sm:grid-cols-2"><label class="flex items-center gap-2 text-sm"><input v-model="tapaForm.is_published" type="checkbox"> Published</label><select v-model="tapaForm.participation_status" class="rounded border p-2"><option value="active">Active</option><option value="withdrawn">Withdrawn</option></select></div><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetTapa">Clear</button></div></form>
         </section>
         <section v-if="tab === 'reports'" class="space-y-5">
           <div class="flex flex-wrap items-end justify-between gap-3"><div><h2 class="text-xl font-bold">Reports</h2><p class="mt-1 text-sm text-stone-600">Admin-only festival activity reports.</p></div><button type="button" class="rounded border border-stone-300 px-3 py-2 text-sm font-semibold" :disabled="reportLoading" @click="loadRatingActivity">{{ reportLoading ? 'Loading…' : 'Refresh' }}</button></div>
           <section class="rounded-xl border bg-white p-4"><h3 class="font-bold">User Rating Activity</h3><div class="mt-3 grid gap-3 sm:grid-cols-3"><label class="text-sm font-semibold">Festival<select v-model="reportFestivalId" class="mt-1 w-full rounded border p-2 font-normal" @change="loadRatingActivity"><option value="">All festivals</option><option v-for="festival in festivals" :key="festival.id" :value="festival.id">{{ festival.name_en || festival.name_es }}</option></select></label><label class="text-sm font-semibold">User<select v-model="reportUserLabel" class="mt-1 w-full rounded border p-2 font-normal"><option value="">All users</option><option v-for="label in reportUsers" :key="label" :value="label">{{ label }}</option></select></label><label class="text-sm font-semibold">Rating type<select v-model="reportRatingType" class="mt-1 w-full rounded border p-2 font-normal"><option value="all">All</option><option value="tapa">Tapa</option><option value="bar">Bar</option></select></label></div></section>
           <div class="grid gap-3 sm:grid-cols-4"><div class="rounded-xl border bg-white p-4"><p class="text-sm text-stone-500">Users who have rated</p><p class="mt-1 text-2xl font-bold">{{ reportSummary.users }}</p></div><div class="rounded-xl border bg-white p-4"><p class="text-sm text-stone-500">Tapa ratings</p><p class="mt-1 text-2xl font-bold">{{ reportSummary.tapa }}</p></div><div class="rounded-xl border bg-white p-4"><p class="text-sm text-stone-500">Bar ratings</p><p class="mt-1 text-2xl font-bold">{{ reportSummary.bar }}</p></div><div class="rounded-xl border bg-white p-4"><p class="text-sm text-stone-500">Total ratings</p><p class="mt-1 text-2xl font-bold">{{ reportSummary.total }}</p></div></div>
           <div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full min-w-[680px] text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">User</th><th class="p-3 text-right">Tapa ratings</th><th class="p-3 text-right">Bar ratings</th><th class="p-3 text-right">Total</th><th class="p-3"></th></tr></thead><tbody><template v-for="row in filteredReportRows" :key="reportRowKey(row)"><tr class="border-t"><td class="p-3 font-medium">{{ row.user_label }}</td><td class="p-3 text-right">{{ row.tapa_rating_count }}</td><td class="p-3 text-right">{{ row.bar_rating_count }}</td><td class="p-3 text-right font-bold">{{ row.total_rating_count }}</td><td class="p-3 text-right"><button type="button" class="font-semibold text-emerald-700" :aria-expanded="Boolean(expandedReportRows[reportRowKey(row)])" @click="toggleReportRow(row)">{{ expandedReportRows[reportRowKey(row)] ? 'Hide' : 'Details' }}</button></td></tr><tr v-if="expandedReportRows[reportRowKey(row)]" class="border-t bg-stone-50"><td colspan="5" class="p-4"><div class="grid gap-5 md:grid-cols-2"><section v-if="reportRatingType !== 'bar'"><h4 class="font-semibold">Tapas rated</h4><ul v-if="row.tapa_ratings.length" class="mt-2 space-y-1 text-sm"><li v-for="(rating, index) in row.tapa_ratings" :key="`${rating.establishment_name}-${rating.tapa_name}-${index}`"><span class="font-medium">{{ rating.establishment_name }}</span> · {{ rating.tapa_name }} · {{ Number(rating.rating).toFixed(1) }} ★</li></ul><p v-else class="mt-2 text-sm text-stone-500">No tapa ratings.</p></section><section v-if="reportRatingType !== 'tapa'"><h4 class="font-semibold">Bars rated</h4><ul v-if="row.bar_ratings.length" class="mt-2 space-y-1 text-sm"><li v-for="(rating, index) in row.bar_ratings" :key="`${rating.establishment_name}-${index}`"><span class="font-medium">{{ rating.establishment_name }}</span> · {{ Number(rating.rating).toFixed(1) }} ★</li></ul><p v-else class="mt-2 text-sm text-stone-500">No bar ratings.</p></section></div></td></tr></template><tr v-if="!filteredReportRows.length && !reportLoading"><td colspan="5" class="p-5 text-center text-stone-500">No matching rating activity.</td></tr></tbody></table></div>
+          <section class="rounded-xl border bg-white p-4"><h3 class="font-bold">Tapa Rating Detail</h3><div class="mt-3 grid gap-3 sm:grid-cols-3"><label class="text-sm font-semibold sm:col-span-2">Tapa<select v-model="detailTapaId" class="mt-1 w-full rounded border p-2 font-normal" @change="loadTapaRatingDetail"><option value="">Select a tapa</option><option v-for="tapa in reportTapas" :key="tapa.id" :value="tapa.id">{{ tapa.festival_number || "—" }} · {{ establishments.find((venue) => venue.id === tapa.establishment_id)?.name }} · {{ tapa.name_en || tapa.name_es }}</option></select></label><label class="text-sm font-semibold">Sort<select v-model="detailSort" class="mt-1 w-full rounded border p-2 font-normal"><option value="newest">Newest</option><option value="rating">Rating</option></select></label></div><div v-if="detailRows.length" class="mt-4"><p class="text-sm font-semibold">{{ detailRows[0].programme_number || "—" }} · {{ detailRows[0].establishment_name }} · {{ detailRows[0].tapa_name }}</p><p class="mt-1 text-sm">{{ detailRows[0].total_rating_count }} numeric ratings · {{ detailRows[0].average_rating == null ? "—" : Number(detailRows[0].average_rating).toFixed(1) }} ★</p><p class="text-xs text-stone-600">1.0–1.9: {{ detailRows[0].rating_1_19_count }} · 2.0–2.9: {{ detailRows[0].rating_2_29_count }} · 3.0–3.9: {{ detailRows[0].rating_3_39_count }} · 4.0–4.4: {{ detailRows[0].rating_4_44_count }} · 4.5–5.0: {{ detailRows[0].rating_45_50_count }}</p><div class="mt-3 overflow-x-auto"><table class="w-full min-w-[620px] text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-2">User</th><th class="p-2">Rating</th><th class="p-2">Review</th><th class="p-2">Date</th></tr></thead><tbody><tr v-for="row in sortedDetailRows" :key="row.user_label + row.created_at" class="border-t"><td class="p-2">{{ row.user_label }}</td><td class="p-2">{{ row.rating == null ? "—" : Number(row.rating).toFixed(1) }}</td><td class="p-2">{{ row.review_text || "—" }}</td><td class="p-2"><span v-if="row.created_at" class="block whitespace-nowrap leading-tight">{{ adminDateTimeLines(row.created_at).date }}<span class="block">{{ adminDateTimeLines(row.created_at).time }}</span></span><span v-else>—</span></td></tr></tbody></table></div></div><p v-else-if="detailTapaId && !detailLoading" class="mt-3 text-sm text-stone-500">No current votes.</p></section>
+        </section>
+
+        <section v-if="tab === 'reviews'" class="space-y-5">
+          <div class="flex flex-wrap items-end justify-between gap-3">
+            <div><h2 class="text-xl font-bold">Reviews</h2><p class="mt-1 text-sm text-stone-600">Review written tapa feedback and hide or restore it without changing numeric ratings.</p></div>
+            <p class="text-sm text-stone-500">{{ reviewTotal }} matching review{{ reviewTotal === 1 ? "" : "s" }}</p>
+          </div>
+          <form class="flex flex-wrap gap-3 rounded-xl border bg-white p-4" @submit.prevent="searchModeratedReviews">
+            <input v-model="reviewQuery" class="min-w-0 flex-1 rounded border p-2" type="search" autocomplete="off" placeholder="Search account, bar, tapa or review">
+            <select v-model="reviewStatus" class="rounded border p-2" aria-label="Review status">
+              <option value="all">All</option><option value="visible">Visible</option><option value="hidden">Hidden</option>
+            </select>
+            <button class="rounded bg-emerald-700 px-4 py-2 font-semibold text-white disabled:opacity-50" :disabled="moderatedReviewsLoading">{{ moderatedReviewsLoading ? "Searching..." : "Search" }}</button>
+          </form>
+          <div class="overflow-x-auto rounded-xl border bg-white">
+            <table class="w-full min-w-[900px] text-left text-sm">
+              <thead class="bg-stone-100"><tr><th class="p-3">Date/time</th><th class="p-3">User</th><th class="p-3">Establishment</th><th class="p-3">Tapa</th><th class="p-3 text-center">Rating</th><th class="p-3">Written review</th><th class="p-3">Status</th><th class="p-3 text-right">Action</th></tr></thead>
+              <tbody>
+                <tr v-for="row in moderatedReviews" :key="row.review_id" class="border-t align-top">
+                  <td class="whitespace-nowrap p-3"><span class="block whitespace-nowrap leading-tight">{{ adminDateTimeLines(row.created_at).date }}<span class="block">{{ adminDateTimeLines(row.created_at).time }}</span></span></td>
+                  <td class="p-3 font-mono">{{ row.user_label }}</td>
+                  <td class="p-3">{{ row.establishment_name }}</td>
+                  <td class="p-3">{{ row.tapa_name }}</td>
+                  <td class="p-3 text-center">{{ row.rating == null ? "-" : row.rating }}</td>
+                  <td class="max-w-[28rem] whitespace-pre-wrap p-3">{{ row.review_text }}</td>
+                  <td class="whitespace-nowrap p-3">{{ row.status === 'hidden' ? 'Hidden' : 'Visible' }}</td>
+                  <td class="whitespace-nowrap p-3 text-right"><button type="button" class="font-semibold" :class="row.status === 'hidden' ? 'text-emerald-700' : 'text-amber-700'" :disabled="reviewActionId === row.review_id" @click="setReviewModeration(row, row.status === 'hidden' ? 'visible' : 'hidden')">{{ reviewActionId === row.review_id ? 'Saving...' : row.status === 'hidden' ? 'Restore' : 'Hide' }}</button></td>
+                </tr>
+                <tr v-if="!moderatedReviews.length && !moderatedReviewsLoading"><td colspan="8" class="p-5 text-center text-stone-500">No written reviews match this filter.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-if="reviewTotal > 25" class="flex items-center justify-end gap-3">
+            <button type="button" class="rounded border px-3 py-2 text-sm disabled:opacity-50" :disabled="moderatedReviewsLoading || reviewPage === 0" @click="loadModeratedReviews(reviewPage - 1)">Previous</button>
+            <span class="text-sm text-stone-600">Page {{ reviewPage + 1 }} of {{ Math.ceil(reviewTotal / 25) }}</span>
+            <button type="button" class="rounded border px-3 py-2 text-sm disabled:opacity-50" :disabled="moderatedReviewsLoading || (reviewPage + 1) * 25 >= reviewTotal" @click="loadModeratedReviews(reviewPage + 1)">Next</button>
+          </div>
+        </section>
+
+        <section v-if="tab === 'users'" class="space-y-5">
+          <div class="flex flex-wrap items-end justify-between gap-3"><div><h2 class="text-xl font-bold">Users</h2><p class="mt-1 text-sm text-stone-600">Search registered accounts and inspect festival activity. Account labels remain masked.</p></div><p class="text-sm text-stone-500">{{ registeredUsersTotal }} matching account{{ registeredUsersTotal === 1 ? "" : "s" }}</p></div>
+          <form class="flex flex-wrap gap-3 rounded-xl border bg-white p-4" @submit.prevent="searchRegisteredUsers"><input v-model="registeredUserQuery" class="min-w-0 flex-1 rounded border p-2" type="search" autocomplete="off" placeholder="Search users (* = any characters, ? = one character)"><button class="rounded bg-emerald-700 px-4 py-2 font-semibold text-white disabled:opacity-50" :disabled="registeredUsersLoading">{{ registeredUsersLoading ? "Searching…" : "Search" }}</button></form>
+          <div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full min-w-[1000px] table-fixed text-left text-sm"><colgroup><col><col class="w-[112px]"><col class="w-[132px]"><col class="w-20"><col class="w-24"><col class="w-20"><col class="w-20"><col class="w-16"><col class="w-40"></colgroup><thead class="bg-stone-100"><tr><th class="px-3 py-3">Account</th><th class="px-2 py-3">Registered</th><th class="px-2 py-3">Last festival activity</th><th class="px-2 py-3 text-center">Tapa ratings</th><th class="px-2 py-3 text-center">Written reviews</th><th class="px-2 py-3 text-center">Bar ratings</th><th class="px-2 py-3 text-center">Total activity</th><th class="px-2 py-3">Status</th><th class="px-2 py-3 text-right">Actions</th></tr></thead><tbody><template v-for="row in registeredUsers" :key="row.account_id"><tr class="border-t"><td class="break-all px-3 py-3 font-mono">{{ row.account }}</td><td class="px-2 py-3"><span class="block whitespace-nowrap">{{ adminDateTimeLines(row.registered_at).date }}</span><span class="block whitespace-nowrap text-xs text-stone-600">{{ adminDateTimeLines(row.registered_at).time }}</span></td><td class="px-2 py-3"><template v-if="row.last_festival_activity_at"><span class="block whitespace-nowrap">{{ adminDateTimeLines(row.last_festival_activity_at).date }}</span><span class="block whitespace-nowrap text-xs text-stone-600">{{ adminDateTimeLines(row.last_festival_activity_at).time }}</span></template><span v-else>—</span></td><td class="px-2 py-3 text-center">{{ row.tapa_rating_count }}</td><td class="px-2 py-3 text-center">{{ row.written_review_count }}</td><td class="px-2 py-3 text-center">{{ row.bar_rating_count }}</td><td class="px-2 py-3 text-center font-semibold">{{ row.total_activity_count }}</td><td class="whitespace-nowrap px-2 py-3">{{ row.status }}</td><td class="whitespace-nowrap px-2 py-3 text-right"><div class="grid justify-items-end gap-1"><button type="button" class="font-semibold text-emerald-700" :aria-expanded="selectedRegisteredUser?.account_id === row.account_id" @click="toggleRegisteredUserActivity(row)">{{ selectedRegisteredUser?.account_id === row.account_id ? "Hide activity" : "View activity" }}</button><template v-if="isSuperuser && promotableRegisteredUserIds.has(row.account_id)"><button type="button" class="text-xs font-semibold text-emerald-700 disabled:opacity-50" :disabled="registeredUserPromotionId === row.account_id" @click="promoteRegisteredUser(row, 'admin')">Promote to Admin</button><button type="button" class="text-xs font-semibold text-emerald-700 disabled:opacity-50" :disabled="registeredUserPromotionId === row.account_id" @click="promoteRegisteredUser(row, 'superuser')">Promote to Superadmin</button></template></div></td></tr><tr v-if="selectedRegisteredUser?.account_id === row.account_id" class="border-t bg-stone-50"><td colspan="9" class="p-4"><div class="flex flex-wrap items-baseline justify-between gap-2"><h3 class="font-semibold">User activity · {{ row.account }}</h3><p class="text-sm text-stone-600">{{ row.tapa_rating_count }} tapa rating{{ row.tapa_rating_count === 1 ? "" : "s" }} · {{ row.written_review_count }} written review{{ row.written_review_count === 1 ? "" : "s" }} · {{ row.bar_rating_count }} bar rating{{ row.bar_rating_count === 1 ? "" : "s" }}</p></div><p v-if="registeredUserActivityLoading" class="mt-3 text-sm text-stone-500">Loading activity…</p><div v-else-if="registeredUserActivity.length" class="mt-3 overflow-x-auto"><table class="w-full min-w-[720px] text-left text-sm"><thead class="bg-stone-200"><tr><th class="p-2">Type</th><th class="p-2">Festival</th><th class="p-2">Establishment / bar</th><th class="p-2">Tapa</th><th class="p-2">Rating</th><th class="p-2">Written review</th><th class="p-2">Date</th></tr></thead><tbody><tr v-for="activity in registeredUserActivity" :key="activity.activity_kind + activity.activity_at + activity.establishment_name" class="border-t"><td class="p-2">{{ activity.activity_kind }}</td><td class="p-2">{{ activity.festival_name || "—" }}</td><td class="p-2">{{ activity.establishment_name }}</td><td class="p-2">{{ activity.tapa_name || "—" }}</td><td class="p-2">{{ activity.rating == null ? "—" : activity.rating }}</td><td class="max-w-md whitespace-pre-wrap p-2">{{ activity.review_text || "—" }}</td><td class="p-2"><span class="block whitespace-nowrap leading-tight">{{ adminDateTimeLines(activity.activity_at).date }}<span class="block">{{ adminDateTimeLines(activity.activity_at).time }}</span></span></td></tr></tbody></table></div><p v-else class="mt-3 text-sm text-stone-500">No festival activity recorded for this account.</p></td></tr></template><tr v-if="!registeredUsers.length && !registeredUsersLoading"><td colspan="9" class="p-5 text-center text-stone-500">No registered users match this search.</td></tr></tbody></table></div>
+          <div v-if="registeredUsersTotal > 25" class="flex items-center justify-end gap-3"><button type="button" class="rounded border px-3 py-2 text-sm disabled:opacity-50" :disabled="registeredUsersLoading || registeredUsersPage === 0" @click="loadRegisteredUsers(registeredUsersPage - 1)">Previous</button><span class="text-sm text-stone-600">Page {{ registeredUsersPage + 1 }} of {{ Math.ceil(registeredUsersTotal / 25) }}</span><button type="button" class="rounded border px-3 py-2 text-sm disabled:opacity-50" :disabled="registeredUsersLoading || (registeredUsersPage + 1) * 25 >= registeredUsersTotal" @click="loadRegisteredUsers(registeredUsersPage + 1)">Next</button></div>
+        </section>
+
+        <section v-if="tab === 'administrators' && isSuperuser" class="space-y-5">
+          <div><h2 class="text-xl font-bold">Administrators</h2><p class="mt-1 text-sm text-stone-600">Manage festival administrator access. Full account addresses are visible only to Superadmins.</p></div>
+          <form class="grid gap-3 rounded-xl border bg-white p-4 sm:grid-cols-[minmax(0,1fr)_180px_auto]" @submit.prevent="addAdministrator"><input v-model="administratorEmail" class="rounded border p-2" type="email" autocomplete="off" placeholder="Registered user email" required><select v-model="administratorRole" class="rounded border p-2"><option value="admin">Admin</option><option value="superuser">Superadmin</option></select><button class="rounded bg-emerald-700 px-4 py-2 font-semibold text-white disabled:opacity-50" :disabled="administratorSaving">Add Admin</button></form>
+          <div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full min-w-[720px] text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Account</th><th class="p-3">Role</th><th class="p-3">Added</th><th class="p-3">Status</th><th class="p-3">Actions</th></tr></thead><tbody><tr v-for="row in administrators" :key="row.account_id" class="border-t"><td class="p-3 font-medium">{{ row.account }}</td><td class="p-3 capitalize">{{ administratorRoleLabel(row.role) }}</td><td class="p-3"><span class="block whitespace-nowrap leading-tight">{{ adminDateTimeLines(row.added_at).date }}<span class="block">{{ adminDateTimeLines(row.added_at).time }}</span></span></td><td class="p-3">{{ row.status }}</td><td class="p-3"><div class="flex gap-3"><button v-if="row.role === 'admin'" type="button" class="font-semibold text-emerald-700 disabled:opacity-50" :disabled="administratorSaving" @click="changeAdministratorRole(row, 'superuser')">Promote to Superadmin</button><button v-else type="button" class="font-semibold text-amber-700 disabled:opacity-50" :disabled="administratorSaving" @click="changeAdministratorRole(row, 'admin')">Demote to Admin</button><button type="button" class="font-semibold text-red-700 disabled:opacity-50" :disabled="administratorSaving" @click="removeAdministrator(row)">Remove Admin</button></div></td></tr><tr v-if="!administrators.length && !administratorsLoading"><td colspan="5" class="p-5 text-center text-stone-500">No administrators found.</td></tr></tbody></table></div>
+          <p v-if="administratorsLoading" class="text-sm text-stone-500">Loading administrators…</p>
         </section>
 
       </template>
