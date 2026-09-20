@@ -1,11 +1,12 @@
 <script setup lang="ts">
 type Tab = 'dashboard' | 'festivals' | 'establishments' | 'tapas' | 'reports' | 'reviews' | 'users' | 'administrators';
 type Administrator = { account_id: string; account: string; role: 'admin' | 'superuser'; added_at: string; status: string };
-type RatingActivity = { festival_id: string; user_label: string; tapa_rating_count: number; bar_rating_count: number; total_rating_count: number; tapa_ratings: Array<{ establishment_name: string; tapa_name: string; rating: number }>; bar_ratings: Array<{ establishment_name: string; rating: number }> };
+type RatingActivity = { festival_id: string; user_id?: string; user_label: string; tapa_rating_count: number; bar_rating_count: number; total_rating_count: number; tapa_ratings: Array<{ establishment_name: string; tapa_name: string; rating: number }>; bar_ratings: Array<{ establishment_name: string; rating: number }> };
 type RegisteredUser = { account_id: string; account: string; registered_at: string; last_festival_activity_at: string | null; tapa_rating_count: number; written_review_count: number; bar_rating_count: number; total_activity_count: number; status: string; total_count: number };
 type RegisteredUserActivity = { activity_kind: string; festival_name: string | null; establishment_name: string; tapa_name: string | null; rating: number | null; review_text: string | null; activity_at: string };
-type ModeratedReview = { review_id: string; created_at: string; user_label: string; establishment_name: string; tapa_name: string; rating: number | null; review_text: string; status: 'visible' | 'hidden'; total_count: number };
-type DashboardData = { headline: Record<string, number>; content: Record<string, number>; recent_activity: Array<{ time: string; type: string; user: string; establishment: string; tapa: string | null; rating: number | null }>; most_active_tapas: Array<{ tapa: string; establishment: string; new_ratings: number }> };
+type FullAudit = { account_id: string; account: string; email: string; role: 'user' | 'admin' | 'superuser'; created_at: string; updated_at: string; email_confirmed_at: string | null; last_sign_in_at: string | null; providers: string[]; email_password_available: boolean; status: string; last_festival_activity_at: string | null; activity_summary: { tapa_ratings: number; written_reviews: number; bar_ratings: number; total_activity: number }; role_history: Array<{ action: string; previous_role: string | null; new_role: string | null; performed_by: string; performed_by_id?: string; performed_by_email?: string; created_at: string }>; password_reset_history: Array<{ created_at: string; target_role: string; requesting_administrator: string; requesting_admin_id?: string; requesting_administrator_email?: string }>; review_moderation_history: Array<{ review_id: string; action: string; created_at: string; establishment: string; tapa: string; review_text: string | null; moderator_id?: string; moderator_email?: string }>; activity: Array<{ activity_kind: string; establishment: string; tapa: string | null; rating: number | null; review_text: string | null; activity_at: string }> };
+type ModeratedReview = { review_id: string; created_at: string; user_id?: string; user_label: string; establishment_name: string; tapa_name: string; rating: number | null; review_text: string; status: 'visible' | 'hidden'; total_count: number };
+type DashboardData = { headline: Record<string, number>; content: Record<string, number>; recent_activity: Array<{ time: string; type: string; user: string; user_id?: string; establishment: string; tapa: string | null; rating: number | null }>; most_active_tapas: Array<{ tapa: string; establishment: string; new_ratings: number }> };
 
 const supabase = useSupabaseClient<any>() as any;
 const user = useSupabaseUser();
@@ -52,6 +53,12 @@ const registeredUserQuery = ref('');
 const registeredUsersPage = ref(0);
 const registeredUsersTotal = ref(0);
 const promotableRegisteredUserIds = ref<Set<string>>(new Set());
+const passwordResetEligibleAccountIds = ref<Set<string>>(new Set());
+const fullAuditEligibleAccountIds = ref<Set<string>>(new Set());
+const fullAuditAccountId = ref<string | null>(null);
+const fullAuditLoading = ref(false);
+const fullAudit = ref<FullAudit | null>(null);
+const passwordResetAccountId = ref<string | null>(null);
 const registeredUserPromotionId = ref<string | null>(null);
 const selectedRegisteredUser = ref<RegisteredUser | null>(null);
 const registeredUserActivity = ref<RegisteredUserActivity[]>([]);
@@ -231,7 +238,7 @@ function toggleReportRow(row: RatingActivity) { const key = reportRowKey(row); e
 async function loadRatingActivity() {
   if (!isAdmin.value) return;
   reportLoading.value = true; error.value = '';
-  const { data, error: reportError } = await db().rpc('user_rating_activity', { p_festival_id: reportFestivalId.value || null });
+  const { data, error: reportError } = await $fetch<{ data?: RatingActivity[] }>('/api/admin/reporting', { method: 'POST', body: { action: 'ratings', festivalId: reportFestivalId.value || null } }).then((result) => ({ data: result.data, error: null })).catch((caught) => ({ data: null, error: caught }));
   reportLoading.value = false;
   if (reportError) { error.value = reportError.message; return; }
   reportRows.value = (data || []) as RatingActivity[];
@@ -241,7 +248,7 @@ async function loadTapaRatingDetail() {
   detailRows.value = [];
   if (!isAdmin.value || !detailTapaId.value) return;
   detailLoading.value = true; error.value = "";
-  const { data, error: detailError } = await db().rpc("tapa_rating_detail", { p_tapa_id: detailTapaId.value });
+  const { data, error: detailError } = await $fetch<{ data?: TapaRatingDetail[] }>('/api/admin/reporting', { method: 'POST', body: { action: 'tapa-detail', tapaId: detailTapaId.value } }).then((result) => ({ data: result.data, error: null })).catch((caught) => ({ data: null, error: caught }));
   detailLoading.value = false;
   if (detailError) { error.value = detailError.message; return; }
   detailRows.value = (data || []) as TapaRatingDetail[];
@@ -250,7 +257,7 @@ async function loadTapaRatingDetail() {
 async function loadDashboard() {
   if (!isAdmin.value) return;
   dashboardLoading.value = true; dashboardError.value = '';
-  const { data, error: dashboardRpcError } = await db().rpc('admin_dashboard');
+  const { data, error: dashboardRpcError } = await $fetch<{ data?: any }>('/api/admin/reporting', { method: 'POST', body: { action: 'dashboard' } }).then((result) => ({ data: result.data, error: null })).catch((caught) => ({ data: null, error: caught }));
   dashboardLoading.value = false;
   if (dashboardRpcError) { dashboardError.value = 'Dashboard data is not available yet. Apply the dashboard migration before using these totals.'; return; }
   dashboard.value = { headline: data?.headline || {}, content: data?.content || {}, recent_activity: Array.isArray(data?.recent_activity) ? data.recent_activity : [], most_active_tapas: Array.isArray(data?.most_active_tapas) ? data.most_active_tapas : [] };
@@ -261,12 +268,7 @@ function dashboardDate(value: string) { return adminDateTimeLines(value); }
 async function loadModeratedReviews(page = reviewPage.value) {
   if (!isAdmin.value) return;
   moderatedReviewsLoading.value = true; error.value = '';
-  const { data, error: reviewsError } = await db().rpc('list_review_moderation', {
-    p_query: reviewQuery.value,
-    p_status: reviewStatus.value,
-    p_limit: 25,
-    p_offset: page * 25,
-  });
+  const { data, error: reviewsError } = await $fetch<{ data?: ModeratedReview[] }>('/api/admin/reporting', { method: 'POST', body: { action: 'reviews', query: reviewQuery.value, status: reviewStatus.value, page } }).then((result) => ({ data: result.data, error: null })).catch((caught) => ({ data: null, error: caught }));
   moderatedReviewsLoading.value = false;
   if (reviewsError) { error.value = reviewsError.message; return; }
   moderatedReviews.value = (data || []) as ModeratedReview[];
@@ -322,16 +324,17 @@ async function bootstrapInitialSuperuser() {
 async function loadAdministrators() {
   if (!isSuperuser.value) return;
   administratorsLoading.value = true; error.value = "";
-  const { data, error: administratorsError } = await db().rpc("list_administrators");
+  const { data, error: administratorsError } = await $fetch<{ data?: Administrator[] }>('/api/admin/reporting', { method: 'POST', body: { action: 'administrators' } }).then((result) => ({ data: result.data, error: null })).catch((caught) => ({ data: null, error: caught }));
   administratorsLoading.value = false;
   if (administratorsError) { error.value = administratorsError.message; return; }
   administrators.value = (data || []) as Administrator[];
+  await loadPasswordResetEligibility(administrators.value.map((row) => row.account_id));
 }
 
 async function loadRegisteredUsers(page = registeredUsersPage.value) {
   if (!isAdmin.value) return;
   registeredUsersLoading.value = true; error.value = ""; promotableRegisteredUserIds.value = new Set();
-  const { data, error: usersError } = await db().rpc("search_registered_users", { p_query: registeredUserQuery.value, p_limit: 25, p_offset: page * 25 });
+  const { data, error: usersError } = await $fetch<{ data?: RegisteredUser[] }>('/api/admin/reporting', { method: 'POST', body: { action: 'users', query: registeredUserQuery.value, page } }).then((result) => ({ data: result.data, error: null })).catch((caught) => ({ data: null, error: caught }));
   registeredUsersLoading.value = false;
   if (usersError) { error.value = usersError.message; return; }
   registeredUsers.value = (data || []) as RegisteredUser[];
@@ -339,7 +342,7 @@ async function loadRegisteredUsers(page = registeredUsersPage.value) {
   registeredUsersPage.value = page;
   selectedRegisteredUser.value = null;
   registeredUserActivity.value = [];
-  await loadPromotableRegisteredUsers();
+  await Promise.all([loadPromotableRegisteredUsers(), loadPasswordResetEligibility(registeredUsers.value.map((row) => row.account_id)), loadFullAuditEligibility(registeredUsers.value.map((row) => row.account_id))]);
 }
 
 async function searchRegisteredUsers() { await loadRegisteredUsers(0); }
@@ -350,6 +353,98 @@ async function loadPromotableRegisteredUsers() {
   const { data, error: promotableError } = await db().rpc("list_promotable_registered_users", { p_account_ids: registeredUsers.value.map((row) => row.account_id) });
   if (promotableError) { error.value = promotableError.message; return; }
   promotableRegisteredUserIds.value = new Set((data || []).map((row: { account_id: string }) => row.account_id));
+}
+
+async function loadPasswordResetEligibility(accountIds: string[]) {
+  passwordResetEligibleAccountIds.value = new Set();
+  if (!isAdmin.value || !accountIds.length) return;
+  try {
+    const result = await $fetch<{ eligibleAccountIds?: string[] }>('/api/admin/password-reset-eligibility', {
+      method: 'POST',
+      body: { accountIds },
+    });
+    passwordResetEligibleAccountIds.value = new Set(result.eligibleAccountIds || []);
+  } catch {
+    // The action remains unavailable until the private server secret is configured.
+  }
+}
+
+async function loadFullAuditEligibility(accountIds: string[]) {
+  fullAuditEligibleAccountIds.value = new Set();
+  if (!isAdmin.value || !accountIds.length) return;
+  try {
+    const result = await $fetch<{ eligibleAccountIds?: string[] }>('/api/admin/full-audit-eligibility', {
+      method: 'POST',
+      body: { accountIds },
+    });
+    fullAuditEligibleAccountIds.value = new Set(result.eligibleAccountIds || []);
+  } catch {
+    // The action remains unavailable if the trusted audit service is unavailable.
+  }
+}
+
+async function openFullAudit(row: { account_id: string; account: string }) {
+  if (fullAuditAccountId.value === row.account_id) {
+    fullAuditAccountId.value = null;
+    fullAudit.value = null;
+    return;
+  }
+  fullAuditAccountId.value = row.account_id;
+  fullAuditLoading.value = true;
+  fullAudit.value = null;
+  error.value = '';
+  try {
+    const result = await $fetch<{ audit: FullAudit }>('/api/admin/full-audit', {
+      method: 'POST',
+      body: { accountId: row.account_id },
+    });
+    fullAudit.value = result.audit;
+  } catch {
+    fullAuditAccountId.value = null;
+    error.value = 'Unable to load the account audit.';
+  } finally {
+    fullAuditLoading.value = false;
+  }
+}
+
+function auditRoleLabel(role: string | null | undefined) {
+  return role === 'superuser' ? 'Superadmin' : role === 'admin' ? 'Admin' : 'User';
+}
+function auditActionLabel(action: string) {
+  return action === 'added' ? 'Added as administrator' : action === 'promoted' ? 'Promoted to Superadmin' : action === 'demoted' ? 'Demoted to Admin' : action === 'removed' ? 'Administrator removed' : action;
+}
+
+function auditDateTimeLines(value: string | null | undefined) {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Madrid', day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(value || ''));
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value || '';
+  return { date: get('day') + get('month') + "'" + get('year'), time: [get('hour'), get('minute'), get('second')].join(':') };
+}
+type FullAuditTimelineEntry = { timestamp: string; event: string; result: string };
+function fullAuditTimeline(audit: FullAudit | null): FullAuditTimelineEntry[] {
+  if (!audit) return [];
+  const entries: FullAuditTimelineEntry[] = [
+    { timestamp: audit.created_at, event: 'Account created', result: 'Registered account' },
+    ...(audit.email_confirmed_at ? [{ timestamp: audit.email_confirmed_at, event: 'Email confirmed', result: 'Confirmed' }] : []),
+    ...(audit.last_sign_in_at ? [{ timestamp: audit.last_sign_in_at, event: 'Successful sign-in', result: 'Auth sign-in recorded' }] : []),
+    ...audit.role_history.map((item) => ({ timestamp: item.created_at, event: auditActionLabel(item.action), result: `${auditRoleLabel(item.previous_role)} → ${auditRoleLabel(item.new_role)} · ${item.performed_by_email || item.performed_by}` })),
+    ...audit.password_reset_history.map((item) => ({ timestamp: item.created_at, event: 'Password reset requested', result: `Target role: ${auditRoleLabel(item.target_role)} · Requested by ${item.requesting_administrator_email || item.requesting_administrator}` })),
+    ...audit.review_moderation_history.map((item) => ({ timestamp: item.created_at, event: `Review ${item.action}`, result: `${item.establishment} · ${item.tapa}${item.moderator_email ? ` · ${item.moderator_email}` : ''}` })),
+    ...audit.activity.map((item) => ({ timestamp: item.activity_at, event: item.activity_kind, result: `${item.establishment}${item.tapa ? ` · ${item.tapa}` : ''}${item.rating == null ? '' : ` · ${item.rating}`}` })),
+  ];
+  return entries.filter((entry) => entry.timestamp).sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
+}
+
+async function sendPasswordReset(row: { account_id: string; account: string }) {
+  if (!window.confirm('Send a password reset email to this user?')) return;
+  passwordResetAccountId.value = row.account_id; error.value = ''; notice.value = '';
+  try {
+    await $fetch('/api/admin/send-password-reset', { method: 'POST', body: { accountId: row.account_id } });
+    notice.value = 'Password reset email sent.';
+  } catch {
+    error.value = 'Unable to send the password reset email. Please try again later.';
+  } finally {
+    passwordResetAccountId.value = null;
+  }
 }
 
 async function toggleRegisteredUserActivity(row: RegisteredUser) {
@@ -717,14 +812,14 @@ watch(user, () => {
         <section v-if="tab === 'users'" class="space-y-5">
           <div class="flex flex-wrap items-end justify-between gap-3"><div><h2 class="text-xl font-bold">Users</h2><p class="mt-1 text-sm text-stone-600">Search registered accounts and inspect festival activity. Account labels remain masked.</p></div><p class="text-sm text-stone-500">{{ registeredUsersTotal }} matching account{{ registeredUsersTotal === 1 ? "" : "s" }}</p></div>
           <form class="flex flex-wrap gap-3 rounded-xl border bg-white p-4" @submit.prevent="searchRegisteredUsers"><input v-model="registeredUserQuery" class="min-w-0 flex-1 rounded border p-2" type="search" autocomplete="off" placeholder="Search users (* = any characters, ? = one character)"><button class="rounded bg-emerald-700 px-4 py-2 font-semibold text-white disabled:opacity-50" :disabled="registeredUsersLoading">{{ registeredUsersLoading ? "Searching…" : "Search" }}</button></form>
-          <div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full min-w-[1000px] table-fixed text-left text-sm"><colgroup><col><col class="w-[112px]"><col class="w-[132px]"><col class="w-20"><col class="w-24"><col class="w-20"><col class="w-20"><col class="w-16"><col class="w-40"></colgroup><thead class="bg-stone-100"><tr><th class="px-3 py-3">Account</th><th class="px-2 py-3">Registered</th><th class="px-2 py-3">Last festival activity</th><th class="px-2 py-3 text-center">Tapa ratings</th><th class="px-2 py-3 text-center">Written reviews</th><th class="px-2 py-3 text-center">Bar ratings</th><th class="px-2 py-3 text-center">Total activity</th><th class="px-2 py-3">Status</th><th class="px-2 py-3 text-right">Actions</th></tr></thead><tbody><template v-for="row in registeredUsers" :key="row.account_id"><tr class="border-t"><td class="break-all px-3 py-3 font-mono">{{ row.account }}</td><td class="px-2 py-3"><span class="block whitespace-nowrap">{{ adminDateTimeLines(row.registered_at).date }}</span><span class="block whitespace-nowrap text-xs text-stone-600">{{ adminDateTimeLines(row.registered_at).time }}</span></td><td class="px-2 py-3"><template v-if="row.last_festival_activity_at"><span class="block whitespace-nowrap">{{ adminDateTimeLines(row.last_festival_activity_at).date }}</span><span class="block whitespace-nowrap text-xs text-stone-600">{{ adminDateTimeLines(row.last_festival_activity_at).time }}</span></template><span v-else>—</span></td><td class="px-2 py-3 text-center">{{ row.tapa_rating_count }}</td><td class="px-2 py-3 text-center">{{ row.written_review_count }}</td><td class="px-2 py-3 text-center">{{ row.bar_rating_count }}</td><td class="px-2 py-3 text-center font-semibold">{{ row.total_activity_count }}</td><td class="whitespace-nowrap px-2 py-3">{{ row.status }}</td><td class="whitespace-nowrap px-2 py-3 text-right"><div class="grid justify-items-end gap-1"><button type="button" class="font-semibold text-emerald-700" :aria-expanded="selectedRegisteredUser?.account_id === row.account_id" @click="toggleRegisteredUserActivity(row)">{{ selectedRegisteredUser?.account_id === row.account_id ? "Hide activity" : "View activity" }}</button><template v-if="isSuperuser && promotableRegisteredUserIds.has(row.account_id)"><button type="button" class="text-xs font-semibold text-emerald-700 disabled:opacity-50" :disabled="registeredUserPromotionId === row.account_id" @click="promoteRegisteredUser(row, 'admin')">Promote to Admin</button><button type="button" class="text-xs font-semibold text-emerald-700 disabled:opacity-50" :disabled="registeredUserPromotionId === row.account_id" @click="promoteRegisteredUser(row, 'superuser')">Promote to Superadmin</button></template></div></td></tr><tr v-if="selectedRegisteredUser?.account_id === row.account_id" class="border-t bg-stone-50"><td colspan="9" class="p-4"><div class="flex flex-wrap items-baseline justify-between gap-2"><h3 class="font-semibold">User activity · {{ row.account }}</h3><p class="text-sm text-stone-600">{{ row.tapa_rating_count }} tapa rating{{ row.tapa_rating_count === 1 ? "" : "s" }} · {{ row.written_review_count }} written review{{ row.written_review_count === 1 ? "" : "s" }} · {{ row.bar_rating_count }} bar rating{{ row.bar_rating_count === 1 ? "" : "s" }}</p></div><p v-if="registeredUserActivityLoading" class="mt-3 text-sm text-stone-500">Loading activity…</p><div v-else-if="registeredUserActivity.length" class="mt-3 overflow-x-auto"><table class="w-full min-w-[720px] text-left text-sm"><thead class="bg-stone-200"><tr><th class="p-2">Type</th><th class="p-2">Festival</th><th class="p-2">Establishment / bar</th><th class="p-2">Tapa</th><th class="p-2">Rating</th><th class="p-2">Written review</th><th class="p-2">Date</th></tr></thead><tbody><tr v-for="activity in registeredUserActivity" :key="activity.activity_kind + activity.activity_at + activity.establishment_name" class="border-t"><td class="p-2">{{ activity.activity_kind }}</td><td class="p-2">{{ activity.festival_name || "—" }}</td><td class="p-2">{{ activity.establishment_name }}</td><td class="p-2">{{ activity.tapa_name || "—" }}</td><td class="p-2">{{ activity.rating == null ? "—" : activity.rating }}</td><td class="max-w-md whitespace-pre-wrap p-2">{{ activity.review_text || "—" }}</td><td class="p-2"><span class="block whitespace-nowrap leading-tight">{{ adminDateTimeLines(activity.activity_at).date }}<span class="block">{{ adminDateTimeLines(activity.activity_at).time }}</span></span></td></tr></tbody></table></div><p v-else class="mt-3 text-sm text-stone-500">No festival activity recorded for this account.</p></td></tr></template><tr v-if="!registeredUsers.length && !registeredUsersLoading"><td colspan="9" class="p-5 text-center text-stone-500">No registered users match this search.</td></tr></tbody></table></div>
+          <div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full min-w-[1000px] table-fixed text-left text-sm"><colgroup><col><col class="w-[112px]"><col class="w-[132px]"><col class="w-20"><col class="w-24"><col class="w-20"><col class="w-20"><col class="w-16"><col class="w-40"></colgroup><thead class="bg-stone-100"><tr><th class="px-3 py-3">Account</th><th class="px-2 py-3">Registered</th><th class="px-2 py-3">Last festival activity</th><th class="px-2 py-3 text-center">Tapa ratings</th><th class="px-2 py-3 text-center">Written reviews</th><th class="px-2 py-3 text-center">Bar ratings</th><th class="px-2 py-3 text-center">Total activity</th><th class="px-2 py-3">Status</th><th class="px-2 py-3 text-right">Actions</th></tr></thead><tbody><template v-for="row in registeredUsers" :key="row.account_id"><tr class="border-t"><td class="break-all px-3 py-3 font-mono">{{ row.account }}</td><td class="px-2 py-3"><span class="block whitespace-nowrap">{{ adminDateTimeLines(row.registered_at).date }}</span><span class="block whitespace-nowrap text-xs text-stone-600">{{ adminDateTimeLines(row.registered_at).time }}</span></td><td class="px-2 py-3"><template v-if="row.last_festival_activity_at"><span class="block whitespace-nowrap">{{ adminDateTimeLines(row.last_festival_activity_at).date }}</span><span class="block whitespace-nowrap text-xs text-stone-600">{{ adminDateTimeLines(row.last_festival_activity_at).time }}</span></template><span v-else>—</span></td><td class="px-2 py-3 text-center">{{ row.tapa_rating_count }}</td><td class="px-2 py-3 text-center">{{ row.written_review_count }}</td><td class="px-2 py-3 text-center">{{ row.bar_rating_count }}</td><td class="px-2 py-3 text-center font-semibold">{{ row.total_activity_count }}</td><td class="whitespace-nowrap px-2 py-3">{{ row.status }}</td><td class="whitespace-nowrap px-2 py-3 text-right"><div class="grid justify-items-end gap-1"><button type="button" class="font-semibold text-emerald-700" :aria-expanded="selectedRegisteredUser?.account_id === row.account_id" @click="toggleRegisteredUserActivity(row)">{{ selectedRegisteredUser?.account_id === row.account_id ? "Hide activity" : "View activity" }}</button><button v-if="passwordResetEligibleAccountIds.has(row.account_id)" type="button" class="text-xs font-semibold text-emerald-700 disabled:opacity-50" :disabled="passwordResetAccountId === row.account_id" @click="sendPasswordReset(row)">{{ passwordResetAccountId === row.account_id ? "Sending…" : "Send password reset" }}</button><button v-if="fullAuditEligibleAccountIds.has(row.account_id)" type="button" class="text-xs font-semibold text-emerald-700 disabled:opacity-50" :disabled="fullAuditLoading && fullAuditAccountId === row.account_id" @click="openFullAudit(row)">{{ fullAuditLoading && fullAuditAccountId === row.account_id ? "Loading audit…" : fullAuditAccountId === row.account_id ? "Hide audit" : "Full Audit" }}</button><template v-if="isSuperuser && promotableRegisteredUserIds.has(row.account_id)"><button type="button" class="text-xs font-semibold text-emerald-700 disabled:opacity-50" :disabled="registeredUserPromotionId === row.account_id" @click="promoteRegisteredUser(row, 'admin')">Promote to Admin</button><button type="button" class="text-xs font-semibold text-emerald-700 disabled:opacity-50" :disabled="registeredUserPromotionId === row.account_id" @click="promoteRegisteredUser(row, 'superuser')">Promote to Superadmin</button></template></div></td></tr><tr v-if="selectedRegisteredUser?.account_id === row.account_id" class="border-t bg-stone-50"><td colspan="9" class="p-4"><div class="flex flex-wrap items-baseline justify-between gap-2"><h3 class="font-semibold">User activity · {{ row.account }}</h3><p class="text-sm text-stone-600">{{ row.tapa_rating_count }} tapa rating{{ row.tapa_rating_count === 1 ? "" : "s" }} · {{ row.written_review_count }} written review{{ row.written_review_count === 1 ? "" : "s" }} · {{ row.bar_rating_count }} bar rating{{ row.bar_rating_count === 1 ? "" : "s" }}</p></div><p v-if="registeredUserActivityLoading" class="mt-3 text-sm text-stone-500">Loading activity…</p><div v-else-if="registeredUserActivity.length" class="mt-3 overflow-x-auto"><table class="w-full min-w-[720px] text-left text-sm"><thead class="bg-stone-200"><tr><th class="p-2">Type</th><th class="p-2">Festival</th><th class="p-2">Establishment / bar</th><th class="p-2">Tapa</th><th class="p-2">Rating</th><th class="p-2">Written review</th><th class="p-2">Date</th></tr></thead><tbody><tr v-for="activity in registeredUserActivity" :key="activity.activity_kind + activity.activity_at + activity.establishment_name" class="border-t"><td class="p-2">{{ activity.activity_kind }}</td><td class="p-2">{{ activity.festival_name || "—" }}</td><td class="p-2">{{ activity.establishment_name }}</td><td class="p-2">{{ activity.tapa_name || "—" }}</td><td class="p-2">{{ activity.rating == null ? "—" : activity.rating }}</td><td class="max-w-md whitespace-pre-wrap p-2">{{ activity.review_text || "—" }}</td><td class="p-2"><span class="block whitespace-nowrap leading-tight">{{ adminDateTimeLines(activity.activity_at).date }}<span class="block">{{ adminDateTimeLines(activity.activity_at).time }}</span></span></td></tr></tbody></table></div><p v-else class="mt-3 text-sm text-stone-500">No festival activity recorded for this account.</p></td></tr><tr v-if="fullAuditAccountId === row.account_id" class="border-t bg-emerald-50"><td colspan="9" class="p-4"><div v-if="fullAuditLoading" class="text-sm text-stone-600">Loading read-only account audit…</div><div v-else-if="fullAudit" class="space-y-4"><div class="flex flex-wrap items-baseline justify-between gap-2"><h3 class="font-semibold">Full Audit · {{ fullAudit.email }}</h3><span class="text-xs text-stone-600">Read-only</span></div><div class="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4"><div><span class="font-semibold">Email</span><p>{{ fullAudit.email }}</p></div><div><span class="font-semibold">Auth UUID</span><p class="break-all font-mono text-xs">{{ fullAudit.account_id }}</p></div><div><span class="font-semibold">Current role</span><p>{{ auditRoleLabel(fullAudit.role) }}</p></div><div><span class="font-semibold">Status</span><p>{{ fullAudit.status }}</p></div><div><span class="font-semibold">Created</span><p>{{ auditDateTimeLines(fullAudit.created_at).date }} {{ auditDateTimeLines(fullAudit.created_at).time }}</p></div><div><span class="font-semibold">Email confirmed</span><p>{{ fullAudit.email_confirmed_at ? auditDateTimeLines(fullAudit.email_confirmed_at).date + ' ' + auditDateTimeLines(fullAudit.email_confirmed_at).time : 'No' }}</p></div><div><span class="font-semibold">Providers</span><p>{{ fullAudit.providers.join(', ') || '—' }}</p></div><div><span class="font-semibold">Last successful login</span><p>{{ fullAudit.last_sign_in_at ? auditDateTimeLines(fullAudit.last_sign_in_at).date + ' ' + auditDateTimeLines(fullAudit.last_sign_in_at).time : '—' }}</p></div><div><span class="font-semibold">Last festival activity</span><p>{{ fullAudit.last_festival_activity_at ? auditDateTimeLines(fullAudit.last_festival_activity_at).date + ' ' + auditDateTimeLines(fullAudit.last_festival_activity_at).time : '—' }}</p></div><div><span class="font-semibold">Activity</span><p>{{ fullAudit.activity_summary.tapa_ratings }} tapa · {{ fullAudit.activity_summary.written_reviews }} reviews · {{ fullAudit.activity_summary.bar_ratings }} bar</p></div></div><div><h4 class="font-semibold">Chronological audit · Europe/Madrid</h4><div class="mt-2 max-h-96 overflow-auto rounded border bg-white"><table class="w-full text-left text-sm"><thead class="sticky top-0 bg-stone-100"><tr><th class="p-2">Date/time</th><th class="p-2">Event</th><th class="p-2">Result</th></tr></thead><tbody><tr v-for="entry in fullAuditTimeline(fullAudit)" :key="entry.timestamp + entry.event + entry.result" class="border-t"><td class="whitespace-nowrap p-2"><span class="block">{{ auditDateTimeLines(entry.timestamp).date }}</span><span class="text-xs text-stone-600">{{ auditDateTimeLines(entry.timestamp).time }}</span></td><td class="p-2">{{ entry.event }}</td><td class="p-2">{{ entry.result }}</td></tr><tr v-if="!fullAuditTimeline(fullAudit).length"><td colspan="3" class="p-3 text-stone-500">No additional audit events.</td></tr></tbody></table></div></div><p class="text-xs text-stone-600">Password change confirmation: Not available. Authentication tokens, password data, recovery tokens, API keys, and service secrets are never returned.</p></div></td></tr></template><tr v-if="!registeredUsers.length && !registeredUsersLoading"><td colspan="9" class="p-5 text-center text-stone-500">No registered users match this search.</td></tr></tbody></table></div>
           <div v-if="registeredUsersTotal > 25" class="flex items-center justify-end gap-3"><button type="button" class="rounded border px-3 py-2 text-sm disabled:opacity-50" :disabled="registeredUsersLoading || registeredUsersPage === 0" @click="loadRegisteredUsers(registeredUsersPage - 1)">Previous</button><span class="text-sm text-stone-600">Page {{ registeredUsersPage + 1 }} of {{ Math.ceil(registeredUsersTotal / 25) }}</span><button type="button" class="rounded border px-3 py-2 text-sm disabled:opacity-50" :disabled="registeredUsersLoading || (registeredUsersPage + 1) * 25 >= registeredUsersTotal" @click="loadRegisteredUsers(registeredUsersPage + 1)">Next</button></div>
         </section>
 
         <section v-if="tab === 'administrators' && isSuperuser" class="space-y-5">
           <div><h2 class="text-xl font-bold">Administrators</h2><p class="mt-1 text-sm text-stone-600">Manage festival administrator access. Full account addresses are visible only to Superadmins.</p></div>
           <form class="grid gap-3 rounded-xl border bg-white p-4 sm:grid-cols-[minmax(0,1fr)_180px_auto]" @submit.prevent="addAdministrator"><input v-model="administratorEmail" class="rounded border p-2" type="email" autocomplete="off" placeholder="Registered user email" required><select v-model="administratorRole" class="rounded border p-2"><option value="admin">Admin</option><option value="superuser">Superadmin</option></select><button class="rounded bg-emerald-700 px-4 py-2 font-semibold text-white disabled:opacity-50" :disabled="administratorSaving">Add Admin</button></form>
-          <div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full min-w-[720px] text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Account</th><th class="p-3">Role</th><th class="p-3">Added</th><th class="p-3">Status</th><th class="p-3">Actions</th></tr></thead><tbody><tr v-for="row in administrators" :key="row.account_id" class="border-t"><td class="p-3 font-medium">{{ row.account }}</td><td class="p-3 capitalize">{{ administratorRoleLabel(row.role) }}</td><td class="p-3"><span class="block whitespace-nowrap leading-tight">{{ adminDateTimeLines(row.added_at).date }}<span class="block">{{ adminDateTimeLines(row.added_at).time }}</span></span></td><td class="p-3">{{ row.status }}</td><td class="p-3"><div class="flex gap-3"><button v-if="row.role === 'admin'" type="button" class="font-semibold text-emerald-700 disabled:opacity-50" :disabled="administratorSaving" @click="changeAdministratorRole(row, 'superuser')">Promote to Superadmin</button><button v-else type="button" class="font-semibold text-amber-700 disabled:opacity-50" :disabled="administratorSaving" @click="changeAdministratorRole(row, 'admin')">Demote to Admin</button><button type="button" class="font-semibold text-red-700 disabled:opacity-50" :disabled="administratorSaving" @click="removeAdministrator(row)">Remove Admin</button></div></td></tr><tr v-if="!administrators.length && !administratorsLoading"><td colspan="5" class="p-5 text-center text-stone-500">No administrators found.</td></tr></tbody></table></div>
+          <div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full min-w-[720px] text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Account</th><th class="p-3">Role</th><th class="p-3">Added</th><th class="p-3">Status</th><th class="p-3">Actions</th></tr></thead><tbody><tr v-for="row in administrators" :key="row.account_id" class="border-t"><td class="p-3 font-medium">{{ row.account }}</td><td class="p-3 capitalize">{{ administratorRoleLabel(row.role) }}</td><td class="p-3"><span class="block whitespace-nowrap leading-tight">{{ adminDateTimeLines(row.added_at).date }}<span class="block">{{ adminDateTimeLines(row.added_at).time }}</span></span></td><td class="p-3">{{ row.status }}</td><td class="p-3"><div class="flex gap-3"><button v-if="row.role === 'admin'" type="button" class="font-semibold text-emerald-700 disabled:opacity-50" :disabled="administratorSaving" @click="changeAdministratorRole(row, 'superuser')">Promote to Superadmin</button><button v-else type="button" class="font-semibold text-amber-700 disabled:opacity-50" :disabled="administratorSaving" @click="changeAdministratorRole(row, 'admin')">Demote to Admin</button><button v-if="passwordResetEligibleAccountIds.has(row.account_id)" type="button" class="font-semibold text-emerald-700 disabled:opacity-50" :disabled="passwordResetAccountId === row.account_id" @click="sendPasswordReset(row)">{{ passwordResetAccountId === row.account_id ? 'Sending…' : 'Send password reset' }}</button><button type="button" class="font-semibold text-red-700 disabled:opacity-50" :disabled="administratorSaving" @click="removeAdministrator(row)">Remove Admin</button></div></td></tr><tr v-if="!administrators.length && !administratorsLoading"><td colspan="5" class="p-5 text-center text-stone-500">No administrators found.</td></tr></tbody></table></div>
           <p v-if="administratorsLoading" class="text-sm text-stone-500">Loading administrators…</p>
         </section>
 

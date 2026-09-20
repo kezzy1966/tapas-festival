@@ -6,6 +6,11 @@ const buildParts = new Intl.DateTimeFormat('en-GB', {
 }).formatToParts(new Date());
 const buildPart = (type: Intl.DateTimeFormatPartTypes) => buildParts.find((part) => part.type === type)?.value || '';
 const buildReference = `${buildPart('weekday')}${buildPart('day')}${buildPart('month')}'${buildPart('year')}@${buildPart('hour')}${buildPart('minute')}`;
+const configuredPublicSupabaseKey = process.env.NUXT_PUBLIC_SUPABASE_KEY || '';
+if (configuredPublicSupabaseKey.startsWith('sb_secret_')) {
+  throw new Error('NUXT_PUBLIC_SUPABASE_KEY must contain the Supabase publishable/anon key, never a secret key.');
+}
+
 
 
 export default defineNuxtConfig({
@@ -16,6 +21,7 @@ export default defineNuxtConfig({
   },
   runtimeConfig: {
     nominatimContactEmail: '',
+    adminPasswordResetServiceRoleKey: '',
     public: { buildReference },
   },
   modules: ['@pinia/nuxt', '@nuxt/icon', '@nuxtjs/supabase','@vercel/analytics'],
