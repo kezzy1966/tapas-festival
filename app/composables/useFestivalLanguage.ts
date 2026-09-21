@@ -16,7 +16,7 @@ const messages = {
 } as const;
 
 export function useFestivalLanguage() {
-  const language = useState<FestivalLanguage>('festival-language', () => 'en');
+  const language = useState<FestivalLanguage>('festival-language', () => 'es');
   const t = (key: TranslationKey) => messages[language.value][key];
   const localized = (english?: string | null, spanish?: string | null) => language.value === 'es' ? spanish || english || '' : english || spanish || '';
   const setLanguage = (value: FestivalLanguage) => {

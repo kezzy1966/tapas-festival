@@ -768,6 +768,7 @@ watch(user, () => {
       <header class="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div><p class="text-sm font-semibold text-emerald-700">tapas-festival</p><h1 class="font-display text-3xl font-bold">Admin</h1></div>
         <div class="flex flex-wrap items-center justify-end gap-3">
+          <NuxtLink to="/" class="rounded-lg border border-emerald-700 px-3 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50">← Back to Festival</NuxtLink>
           <div v-if="user && isAdmin && !checkingAccess" class="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 text-right text-sm text-stone-700"><span class="font-semibold">Logged in as:</span><span class="font-mono">{{ maskAdminIdentity(user.email) }}</span><span aria-hidden="true">—</span><span class="font-semibold">{{ currentAdminRoleLabel }}</span></div>
           <button v-if="user" class="rounded-lg border border-stone-300 px-3 py-2 text-sm" @click="logout">Log out</button>
         </div>

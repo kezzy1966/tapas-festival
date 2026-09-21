@@ -24,6 +24,15 @@ const ui = useUIStore();
 const { logout } = useAuthSession();
 const router = useRouter();
 const route = useRoute();
+const supabase = useSupabaseClient<any>();
+const supabaseUser = useSupabaseUser();
+const isAdminAccount = ref(false);
+async function refreshAdminAccess() {
+  if (!supabaseUser.value) { isAdminAccount.value = false; return; }
+  const { data, error } = await supabase.schema('festival').rpc('is_current_admin');
+  isAdminAccount.value = !error && data === true;
+}
+watch(supabaseUser, () => void refreshAdminAccess(), { immediate: true });
 
 const isLanding = computed(() => route.path === '/');
 
@@ -98,6 +107,7 @@ function goHome() {
             <span class="max-w-25 truncate text-text-primary text-[11px] hidden sm:inline">
               {{ ui.currentUser.email.split('@')[0] }}
             </span>
+            <NuxtLink v-if="isAdminAccount" to="/admin" class="rounded-full bg-primary px-2 py-1 text-[11px] font-semibold text-on-primary">Admin</NuxtLink>
             <button @click="logout()" class="p-1 flex hover:text-red-500 text-text-tertiary transition-colors" title="Log out" aria-label="Log out">
               <LogOut class="w-3.5 h-3.5" />
             </button>
@@ -194,6 +204,8 @@ function goHome() {
           </button>
 
           <div class="border-t border-border my-1"></div>
+
+          <NuxtLink v-if="ui.currentUser && isAdminAccount" to="/admin" class="flex items-center justify-center rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-on-primary" @click="ui.closeMenu()">Admin</NuxtLink>
 
           <div v-if="ui.currentUser" class="flex items-center gap-3 px-4 py-3">
             <div class="w-8 h-8 rounded-full bg-primary text-on-primary flex items-center justify-center text-xs uppercase font-bold">
