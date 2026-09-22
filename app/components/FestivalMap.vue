@@ -19,6 +19,7 @@ const props = defineProps<{
   selectedEstablishmentId: string | null;
   wantedTapas: Record<string, boolean>;
   openNowOnly: boolean;
+  showRatingCounts: boolean;
 }>();
 
 const mapContainer = ref<HTMLElement | null>(null);
@@ -109,7 +110,7 @@ function venueTapas(venueId: string) {
 function ratingText(tapa: Tapa) {
   const rating = props.stats[tapa.id];
   if (!rating || !Number(rating.rating_count)) return t('notRatedYet');
-  return `${Number(rating.average_rating).toFixed(1)} ★ (${rating.rating_count})`;
+  return `${Number(rating.average_rating).toFixed(1)} ★${props.showRatingCounts ? ` (${rating.rating_count})` : ""}`;
 }
 function statusText(venue: Establishment) {
   if (venue.participation_status === 'withdrawn') return t('withdrawn');

@@ -1,5 +1,7 @@
 <script setup lang="ts">
-type Tab = 'dashboard' | 'festivals' | 'establishments' | 'tapas' | 'reports' | 'reviews' | 'users' | 'administrators' | 'resources' | 'photos';
+type Tab = 'dashboard' | 'controls' | 'festivals' | 'establishments' | 'tapas' | 'reports' | 'reviews' | 'users' | 'administrators' | 'resources' | 'photos';
+type FestivalControls = { festival_active: boolean; ratings_enabled: boolean; reviews_enabled: boolean; rankings_enabled: boolean; total_rating_counts_enabled: boolean; want_to_try_enabled: boolean; public_read_only: boolean };
+type ControlAudit = { created_at: string; administrator: string; control: string; previous_value: boolean; new_value: boolean; festival_id: string | null };
 type Administrator = { account_id: string; account: string; role: 'admin' | 'superuser'; added_at: string; status: string };
 type RatingActivity = { festival_id: string; user_id?: string; user_label: string; tapa_rating_count: number; bar_rating_count: number; total_rating_count: number; tapa_ratings: Array<{ establishment_name: string; tapa_name: string; rating: number }>; bar_ratings: Array<{ establishment_name: string; rating: number }> };
 type RegisteredUser = { account_id: string; account: string; registered_at: string; last_festival_activity_at: string | null; tapa_rating_count: number; written_review_count: number; bar_rating_count: number; total_activity_count: number; status: string; total_count: number };
@@ -78,6 +80,14 @@ const reviewPage = ref(0);
 const reviewTotal = ref(0);
 const reviewActionId = ref<string | null>(null);
 const bootstrapSaving = ref(false);
+const controlsFestivalId = ref('');
+const controls = ref<FestivalControls | null>(null);
+const controlsSiteShutdown = ref(false);
+const controlsAudit = ref<ControlAudit[]>([]);
+const controlsLoading = ref(false);
+const controlsSaving = ref<string | null>(null);
+const shutdownConfirmOpen = ref(false);
+const shutdownPhrase = ref('');
 const establishmentPhotoFile = ref<File | null>(null);
 const tapaPhotoFile = ref<File | null>(null);
 const establishmentPhotoPreview = ref('');
@@ -535,7 +545,35 @@ async function removeAdministrator(row: Administrator) {
   notice.value = "Administrator removed."; await loadAdministrators();
 }
 
-function adminTabLabel(value: Tab) { return ({ dashboard: 'Dashboard', festivals: 'Festival', establishments: 'Bars', tapas: 'Tapas', reviews: 'Reviews', users: 'Users', reports: 'Reports', administrators: 'Administrators', resources: 'Resources', photos: 'Photos' } as Record<Tab, string>)[value]; }
+function adminTabLabel(value: Tab) { return ({ dashboard: 'Dashboard', controls: 'Controls', festivals: 'Festival', establishments: 'Bars', tapas: 'Tapas', reviews: 'Reviews', users: 'Users', reports: 'Reports', administrators: 'Administrators', resources: 'Resources', photos: 'Photos' } as Record<Tab, string>)[value]; }
+function controlsCalendarDate(timezone: string) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: timezone || 'Europe/Madrid', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts();
+  const value = (type: string) => parts.find((part) => part.type === type)?.value;
+  return value('year') + '-' + value('month') + '-' + value('day');
+}
+function controlsFestivalName(festival: any) { return festival?.name_en || festival?.name_es || festival?.slug || 'Unnamed festival'; }
+function controlsFestivalYear(festival: any) {
+  const year = String(festival?.start_date || '').slice(0, 4);
+  return year && !/\b(?:19|20)\d{2}\b/.test(controlsFestivalName(festival)) ? year : '';
+}
+function controlsFestivalStatus(festival: any) {
+  const value = String(festival?.publication_status || 'unknown');
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : 'Unknown';
+}
+function controlsFestivalOptionLabel(festival: any) {
+  const year = controlsFestivalYear(festival);
+  return controlsFestivalName(festival) + (year ? ' · ' + year : '') + ' — ' + controlsFestivalStatus(festival);
+}
+function isActivePublishedControlsFestival(festival: any) {
+  if (festival?.publication_status !== 'published') return false;
+  const today = controlsCalendarDate(festival.timezone || 'Europe/Madrid');
+  return festival.start_date <= today && festival.end_date >= today;
+}
+function defaultControlsFestivalId() {
+  const published = festivals.value.filter((festival) => festival.publication_status === 'published');
+  return published.find(isActivePublishedControlsFestival)?.id || published[0]?.id || festivals.value[0]?.id || '';
+}
+const controlsFestival = computed(() => festivals.value.find((festival) => festival.id === controlsFestivalId.value) || null);
 function openEstablishmentAttentionFilter(filter: EstablishmentAttentionFilter) { establishmentAttentionFilter.value = filter; selectTab("establishments"); }
 function openTapaAttentionFilter(filter: TapaAttentionFilter) { tapaAttentionFilter.value = filter; selectTab("tapas"); }
 function openHiddenReviews() { reviewStatus.value = "hidden"; reviewPage.value = 0; selectTab("reviews"); }
@@ -550,6 +588,45 @@ function selectTab(nextTab: Tab) {
   if (nextTab === 'administrators') void loadAdministrators();
   if (nextTab === 'resources') void loadResources();
   if (nextTab === 'photos') void loadPhotos();
+  if (nextTab === 'controls') void loadControls();
+}
+
+async function loadControls() {
+  if (!isAdmin.value) return;
+  if (!controlsFestivalId.value) controlsFestivalId.value = defaultControlsFestivalId();
+  if (!controlsFestivalId.value) return;
+  controlsLoading.value = true; error.value = '';
+  const [result, auditResult, siteAuditResult] = await Promise.all([
+    db().rpc("get_admin_controls", { p_festival_id: controlsFestivalId.value }),
+    db().rpc("list_control_audit", { p_festival_id: controlsFestivalId.value, p_limit: 30 }),
+    db().rpc("list_control_audit", { p_festival_id: null, p_limit: 30 }),
+  ]);
+  controlsLoading.value = false;
+  if (result.error || auditResult.error || siteAuditResult.error) { error.value = result.error?.message || auditResult.error?.message || siteAuditResult.error?.message || 'Controls are unavailable. Apply the controls migration first.'; return; }
+  controls.value = result.data?.controls || null;
+  controlsSiteShutdown.value = result.data?.site?.emergency_shutdown === true;
+  const auditRows = [...(auditResult.data || []), ...(siteAuditResult.data || [])] as ControlAudit[];
+  controlsAudit.value = [...new Map(auditRows.map((row) => [`${row.created_at}:${row.administrator}:${row.control}:${row.festival_id || ""}`, row])).values()]
+    .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+    .slice(0, 30);
+}
+async function setFestivalControl(control: keyof FestivalControls, value: boolean) {
+  if (!controlsFestivalId.value) return;
+  controlsSaving.value = control; error.value = ''; notice.value = '';
+  const { error: saveError } = await db().rpc('set_festival_control', { p_festival_id: controlsFestivalId.value, p_control: control, p_value: value });
+  controlsSaving.value = null;
+  if (saveError) { error.value = saveError.message; return; }
+  notice.value = 'Control updated.'; await loadControls();
+}
+async function setEmergencyShutdown(value: boolean) {
+  if (!isSuperuser.value) return;
+  if (value && shutdownPhrase.value !== 'SHUTDOWN') { error.value = 'Type SHUTDOWN to confirm public shutdown.'; return; }
+  if (!value && !window.confirm('Restore the public site? Administrators will remain signed in.')) return;
+  controlsSaving.value = 'emergency_shutdown'; error.value = '';
+  const { error: saveError } = await db().rpc('set_emergency_shutdown', { p_value: value });
+  controlsSaving.value = null;
+  if (saveError) { error.value = saveError.message; return; }
+  shutdownConfirmOpen.value = false; shutdownPhrase.value = ''; notice.value = value ? 'Public site disabled.' : 'Public site restored.'; await loadControls();
 }
 const valueOrNull = (value: string) => value.trim() || null;
 const numberOrNull = (value: string) => value === '' ? null : Number(value);
@@ -787,7 +864,7 @@ watch(user, () => {
         <p v-if="error" class="mb-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-800">{{ displayAdministratorMessage(error) }}</p>
         <p v-if="notice" class="mb-4 rounded border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">{{ displayAdministratorMessage(notice) }}</p>
         <section v-if="canBootstrapInitialSuperuser" class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><div><h2 class="font-bold text-amber-950">Initial Superadmin setup</h2><p class="mt-1 text-sm text-amber-900">This Admin account can establish the first Superadmin.</p></div><button type="button" class="rounded bg-amber-700 px-4 py-2 font-semibold text-white disabled:opacity-50" :disabled="bootstrapSaving" @click="bootstrapInitialSuperuser">{{ bootstrapSaving ? 'Please wait…' : 'Become initial Superadmin' }}</button></section>
-        <nav class="mb-6 flex gap-2 border-b border-stone-200"><button v-for="item in (isSuperuser ? ['dashboard','festivals','establishments','tapas','reviews','users','reports','administrators','resources','photos'] : ['dashboard','festivals','establishments','tapas','reviews','users','reports','photos']) as Tab[]" :key="item" class="border-b-2 px-4 py-3 text-sm font-semibold capitalize" :class="tab === item ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="selectTab(item)">{{ adminTabLabel(item) }}</button></nav>
+        <nav class="mb-6 flex min-w-0 flex-wrap justify-center gap-x-2 gap-y-2 border-b border-stone-200 sm:justify-start sm:gap-2"><button v-for="item in (isSuperuser ? ['dashboard','controls','festivals','establishments','tapas','reviews','users','reports','administrators','resources','photos'] : ['dashboard','controls','festivals','establishments','tapas','reviews','users','reports','photos']) as Tab[]" :key="item" class="min-h-11 min-w-0 max-w-full border-b-2 px-3 py-2 text-sm font-semibold capitalize sm:px-4 sm:py-3" :class="tab === item ? 'border-emerald-700 text-emerald-800' : 'border-transparent text-stone-500'" @click="selectTab(item)">{{ adminTabLabel(item) }}</button></nav>
         <p v-if="loading" class="text-sm text-stone-500">Loading...</p>
 
         <section v-if="tab === 'dashboard'" class="space-y-5">
@@ -796,6 +873,18 @@ watch(user, () => {
           <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><div class="rounded-xl border bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-stone-500">Registered users</p><p class="mt-1 text-2xl font-bold">{{ dashboardCount('headline', 'registered_users') }}</p></div><div class="rounded-xl border bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-stone-500">Tapa ratings</p><p class="mt-1 text-2xl font-bold">{{ dashboardCount('headline', 'tapa_ratings_total') }}</p><p class="text-xs text-stone-500">{{ dashboardCount('headline', 'tapa_ratings_24h') }} in last 24h</p></div><div class="rounded-xl border bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-stone-500">Written reviews</p><p class="mt-1 text-2xl font-bold">{{ dashboardCount('headline', 'written_reviews_total') }}</p><p class="text-xs text-stone-500">{{ dashboardCount('headline', 'written_reviews_24h') }} in last 24h</p></div><div class="rounded-xl border bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-stone-500">Bar ratings</p><p class="mt-1 text-2xl font-bold">{{ dashboardCount('headline', 'bar_ratings_total') }}</p><p class="text-xs text-stone-500">{{ dashboardCount('headline', 'bar_ratings_24h') }} in last 24h</p></div><div class="rounded-xl border bg-white p-4"><p class="text-xs font-semibold uppercase tracking-wide text-stone-500">Active users</p><p class="mt-1 text-2xl font-bold">{{ dashboardCount('headline', 'active_users_24h') }}</p><p class="text-xs text-stone-500">Any activity in last 24h</p></div></div>
           <div class="grid gap-5 lg:grid-cols-[minmax(0,1.4fr)_minmax(320px,1fr)]"><section class="rounded-xl border bg-white p-4"><div class="flex items-center justify-between gap-3"><h3 class="font-bold">Recent activity</h3><span class="text-xs text-stone-500">Latest 15</span></div><div v-if="dashboard.recent_activity.length" class="mt-3 divide-y"><div v-for="(activity, index) in dashboard.recent_activity" :key="activity.time + activity.type + activity.user + index" class="grid gap-1 py-2 text-sm sm:grid-cols-[120px_minmax(0,1fr)_auto] sm:items-baseline"><span class="text-xs leading-tight text-stone-500"><span class="block whitespace-nowrap">{{ dashboardDate(activity.time).date }}</span><span class="block whitespace-nowrap">{{ dashboardDate(activity.time).time }}</span></span><span><strong>{{ activity.type }}</strong> - {{ activity.establishment }}<template v-if="activity.tapa"> - {{ activity.tapa }}</template><template v-if="activity.rating != null"> - {{ activity.rating }} stars</template></span><span class="font-mono text-xs text-stone-600">{{ activity.user }}</span></div></div><p v-else class="mt-3 text-sm text-stone-500">No recent activity.</p></section><section class="rounded-xl border bg-white p-4"><div class="flex items-center justify-between gap-3"><h3 class="font-bold">Most active tapas</h3><span class="text-xs text-stone-500">New ratings, 24h</span></div><ol v-if="dashboard.most_active_tapas.length" class="mt-3 space-y-2 text-sm"><li v-for="(item, index) in dashboard.most_active_tapas" :key="item.tapa + item.establishment" class="flex items-start justify-between gap-3"><span><strong>{{ index + 1 }}. {{ item.tapa }}</strong><span class="block text-xs text-stone-500">{{ item.establishment }}</span></span><span class="font-semibold">{{ item.new_ratings }}</span></li></ol><p v-else class="mt-3 text-sm text-stone-500">No new tapa ratings in the last 24 hours.</p></section></div>
           <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(320px,1fr)]"><section class="rounded-xl border bg-white p-4"><h3 class="font-bold">Needs attention</h3><ul class="mt-3 space-y-2 text-sm"><li v-if="Number(dashboard.content.hidden_reviews) > 0" class="flex items-center justify-between gap-3"><span>{{ dashboardCount('content', 'hidden_reviews') }} hidden written reviews</span><button type="button" class="font-semibold text-emerald-700 hover:underline" @click="openHiddenReviews">View Reviews</button></li><li v-if="Number(dashboard.content.withdrawn_tapas) > 0" class="flex items-center justify-between gap-3"><span>{{ dashboardCount('content', 'withdrawn_tapas') }} withdrawn tapas</span><button type="button" class="font-semibold text-emerald-700 hover:underline" @click="openTapaAttentionFilter('withdrawn')">View Tapas</button></li><li v-if="Number(dashboard.content.bars_missing_hours) > 0" class="flex items-center justify-between gap-3"><span>{{ dashboardCount('content', 'bars_missing_hours') }} bars missing opening hours</span><button type="button" class="font-semibold text-emerald-700 hover:underline" @click="openEstablishmentAttentionFilter('missing_hours')">View Bars</button></li><li v-if="Number(dashboard.content.bars_missing_photos) > 0" class="flex items-center justify-between gap-3"><span>{{ dashboardCount('content', 'bars_missing_photos') }} bars missing photos</span><button type="button" class="font-semibold text-emerald-700 hover:underline" @click="openEstablishmentAttentionFilter('missing_photos')">View Bars</button></li><li v-if="Number(dashboard.content.tapas_missing_photos) > 0" class="flex items-center justify-between gap-3"><span>{{ dashboardCount('content', 'tapas_missing_photos') }} tapas missing photos</span><button type="button" class="font-semibold text-emerald-700 hover:underline" @click="openTapaAttentionFilter('missing_photos')">View Tapas</button></li><li v-if="!Number(dashboard.content.hidden_reviews) && !Number(dashboard.content.withdrawn_tapas) && !Number(dashboard.content.bars_missing_hours) && !Number(dashboard.content.bars_missing_photos) && !Number(dashboard.content.tapas_missing_photos)" class="text-stone-500">Nothing needs attention.</li></ul></section><section class="rounded-xl border bg-white p-4"><h3 class="font-bold">Festival content</h3><dl class="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3"><div><dt class="text-stone-500">Bars</dt><dd class="text-lg font-bold">{{ dashboardCount('content', 'establishments') }}</dd></div><div><dt class="text-stone-500">Tapas</dt><dd class="text-lg font-bold">{{ dashboardCount('content', 'tapas') }}</dd></div><div><dt class="text-stone-500">Active tapas</dt><dd class="text-lg font-bold">{{ dashboardCount('content', 'active_tapas') }}</dd></div><div><dt class="text-stone-500">Withdrawn tapas</dt><dd class="text-lg font-bold">{{ dashboardCount('content', 'withdrawn_tapas') }}</dd></div><div><dt class="text-stone-500">Hidden reviews</dt><dd class="text-lg font-bold">{{ dashboardCount('content', 'hidden_reviews') }}</dd></div></dl></section></div>
+        </section>
+        <section v-if="tab === 'controls'" class="space-y-5">
+          <div><h2 class="text-xl font-bold">Controls</h2><p class="mt-1 text-sm text-stone-600">Operational controls for the selected festival. Emergency shutdown is site-wide.</p></div>
+          <p v-if="controls?.public_read_only" class="rounded border-2 border-amber-500 bg-amber-50 p-3 font-extrabold text-amber-900">PUBLIC SITE IS CURRENTLY READ-ONLY</p>
+          <div class="rounded-xl border bg-white p-4">
+            <label class="block text-sm font-semibold">Festival being controlled<select v-model="controlsFestivalId" class="mt-1 block w-full rounded border p-2" @change="loadControls"><option v-for="festival in festivals" :key="festival.id" :value="festival.id">{{ controlsFestivalOptionLabel(festival) }}</option></select></label>
+            <div v-if="controlsFestival" class="mt-3 rounded-lg border-2 border-amber-400 bg-amber-50 p-3 text-sm text-amber-950"><p class="font-semibold">You are changing Controls for</p><p class="mt-1 text-base font-bold">{{ controlsFestivalName(controlsFestival) }}<span v-if="controlsFestivalYear(controlsFestival)"> · {{ controlsFestivalYear(controlsFestival) }}</span></p><p class="mt-1">Publication status: <strong>{{ controlsFestivalStatus(controlsFestival) }}</strong></p></div>
+          </div>
+          <div v-if="controls" class="rounded-xl border bg-white p-4"><h3 class="font-bold">Status summary</h3><dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4"><div><dt>Public site</dt><dd class="font-bold" :class="controlsSiteShutdown ? 'text-red-700' : 'text-emerald-700'">{{ controlsSiteShutdown ? 'DISABLED' : 'ONLINE' }}</dd></div><div v-for="item in [['Festival','festival_active'],['Read-only','public_read_only'],['Ratings','ratings_enabled'],['Reviews','reviews_enabled'],['Rankings','rankings_enabled'],['Rating counts','total_rating_counts_enabled'],['Want to Try','want_to_try_enabled']]" :key="item[1]"><dt>{{ item[0] }}</dt><dd class="font-bold" :class="controls[item[1] as keyof FestivalControls] ? 'text-emerald-700' : 'text-red-700'">{{ controls[item[1] as keyof FestivalControls] ? (item[1] === 'festival_active' ? 'ACTIVE' : 'ON') : (item[1] === 'festival_active' ? 'INACTIVE' : 'OFF') }}</dd></div></dl></div>
+          <div v-if="controls" class="rounded-xl border bg-white p-4"><h3 class="font-bold">Festival controls</h3><div class="mt-3 grid gap-3 sm:grid-cols-2"><label v-for="item in [['FESTIVAL ACTIVE','festival_active'],['RATINGS','ratings_enabled'],['REVIEWS','reviews_enabled'],['RANKINGS','rankings_enabled'],['TOTAL RATING COUNTS','total_rating_counts_enabled'],['WANT TO TRY','want_to_try_enabled'],['PUBLIC READ-ONLY MODE','public_read_only']]" :key="item[1]" class="flex items-center justify-between rounded border p-3 text-sm font-semibold"><span>{{ item[0] }}</span><input type="checkbox" :checked="controls[item[1] as keyof FestivalControls]" :disabled="controlsSaving === item[1]" @change="setFestivalControl(item[1] as keyof FestivalControls, ($event.target as HTMLInputElement).checked)"></label></div></div>
+          <div class="rounded-xl border-2 border-red-300 bg-red-50 p-4"><h3 class="font-bold text-red-800">EMERGENCY PUBLIC SHUTDOWN</h3><p class="mt-1 text-sm text-red-800">Anonymous visitors and ordinary users will see the maintenance page. Admin and Superadmin access remains available.</p><template v-if="isSuperuser"><button v-if="!controlsSiteShutdown" type="button" class="mt-3 rounded bg-red-700 px-3 py-2 text-sm font-bold text-white" @click="shutdownConfirmOpen = true">Disable public site</button><button v-else type="button" class="mt-3 rounded border border-red-500 px-3 py-2 text-sm font-bold text-red-800" :disabled="controlsSaving === 'emergency_shutdown'" @click="setEmergencyShutdown(false)">Restore public site</button><div v-if="shutdownConfirmOpen" class="mt-3 rounded border border-red-300 bg-white p-3 text-sm"><p class="font-semibold">Public visitors/users will see the maintenance page. Admin/Superadmin access will remain available.</p><label class="mt-2 block">Type <strong>SHUTDOWN</strong><input v-model="shutdownPhrase" class="mt-1 w-full rounded border p-2" autocomplete="off"></label><div class="mt-2 flex gap-2"><button type="button" class="rounded bg-red-700 px-3 py-2 font-bold text-white" :disabled="shutdownPhrase !== 'SHUTDOWN' || controlsSaving === 'emergency_shutdown'" @click="setEmergencyShutdown(true)">Confirm shutdown</button><button type="button" class="rounded border px-3 py-2" @click="shutdownConfirmOpen = false; shutdownPhrase = ''">Cancel</button></div></div></template><p v-else class="mt-3 text-sm font-semibold text-red-800">Only a Superadmin can change this control.</p></div>
+          <div class="overflow-x-auto rounded-xl border bg-white"><div class="p-4"><h3 class="font-bold">Recent Controls activity</h3></div><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Date/time</th><th class="p-3">Administrator</th><th class="p-3">Control</th><th class="p-3">Old value</th><th class="p-3">New value</th></tr></thead><tbody><tr v-for="row in controlsAudit" :key="row.created_at + row.control" class="border-t"><td class="p-3">{{ adminDateTimeLines(row.created_at).date }} {{ adminDateTimeLines(row.created_at).time }}</td><td class="p-3">{{ row.administrator }}</td><td class="p-3">{{ row.control }}</td><td class="p-3">{{ row.previous_value ? 'ON' : 'OFF' }}</td><td class="p-3">{{ row.new_value ? 'ON' : 'OFF' }}</td></tr><tr v-if="!controlsAudit.length"><td colspan="5" class="p-4 text-stone-500">No control changes recorded.</td></tr></tbody></table></div>
         </section>
 
         <section v-if="tab === 'festivals'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]"><div><h2 class="mb-3 text-xl font-bold">Festivals</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Dates</th><th class="p-3">Status</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in festivals" :key="row.id" class="border-t"><td class="p-3">{{ row.name_en || row.name_es }}</td><td class="p-3">{{ row.start_date }} – {{ row.end_date }}</td><td class="p-3">{{ row.publication_status }}</td><td class="p-3"><button class="text-emerald-700" @click="editFestival(row)">Edit</button></td></tr></tbody></table></div></div><form class="space-y-3 rounded-xl border bg-white p-5" @submit.prevent="saveFestival"><h2 class="text-lg font-bold">{{ editingFestival ? 'Edit festival' : 'New festival' }}</h2><input v-model="festivalForm.name_en" class="w-full rounded border p-2" placeholder="English name" required @input="updateGeneratedSlug"><input v-model="festivalForm.name_es" class="w-full rounded border p-2" placeholder="Spanish name"><input v-model="festivalForm.slug" class="w-full rounded border p-2" placeholder="slug" required @input="markSlugManual"><div class="grid grid-cols-2 gap-2"><input v-model="festivalForm.start_date" class="rounded border p-2" type="date" required><input v-model="festivalForm.end_date" class="rounded border p-2" type="date" required></div><input v-model="festivalForm.city" class="w-full rounded border p-2" placeholder="City" required><input v-model="festivalForm.default_tapa_price" class="w-full rounded border p-2" type="number" min="0" step="0.01" placeholder="Default price" required><select v-model="festivalForm.publication_status" class="w-full rounded border p-2"><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select><label class="flex gap-2 text-sm"><input v-model="festivalForm.reviews_enabled" type="checkbox"> Reviews enabled</label><label class="flex gap-2 text-sm"><input v-model="festivalForm.show_rankings" type="checkbox"> Show rankings</label><label class="flex gap-2 text-sm"><input v-model="festivalForm.show_total_rating_count" type="checkbox"> Show total tapa ratings</label><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetFestival">Clear</button></div></form></section>
