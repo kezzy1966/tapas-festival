@@ -43,7 +43,7 @@ export default defineEventHandler(async (event) => {
       if (result.error) throw createError({ statusCode: 502, statusMessage: 'Review data is unavailable.' });
       return { data: await enrichRows(result.data || [], resolveEmail, 'user_id', 'user_label') };
     case 'users':
-      result = await rpc('search_registered_users', { p_query: body.query || '', p_limit: 25, p_offset: Math.max(0, Number(body.page || 0)) * 25 });
+      result = await rpc('search_registered_users_with_suspension', { p_query: body.query || '', p_limit: 25, p_offset: Math.max(0, Number(body.page || 0)) * 25 });
       if (result.error) throw createError({ statusCode: 502, statusMessage: 'User data is unavailable.' });
       return { data: await enrichRows(result.data || [], resolveEmail, 'account_id', 'account') };
     case 'administrators':

@@ -61,7 +61,7 @@ try {
   if (backfill.rows[0]?.display_name !== 'Festival visitor') throw new Error('Existing-user profile backfill failed');
   console.log('PASS: existing Auth account backfilled with a non-email display name');
   let total = 1;
-  for (const name of (await readdir(testsDir)).filter(n => n === 'festival_withdrawn_establishment_participation.sql').sort()) {
+  for (const name of (await readdir(testsDir)).filter(n => n === 'festival_withdrawn_establishment_participation.sql' || n === 'festival_user_suspension.sql').sort()) {
     const results = await db.exec(await readSql(resolve(testsDir, name)));
     const checks = results.flatMap(r => r.rows).filter(r => 'assert_true' in r || 'expect_error' in r);
     total += checks.length;
