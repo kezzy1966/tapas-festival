@@ -98,14 +98,22 @@ async function refreshAdminAccess() {
   isAdminAccount.value = !roleError && data === true;
 }
 let suspensionRefreshPromise: Promise<void> | null = null;
+let suspensionRefreshQueued = false;
 async function refreshUserSuspension() {
   if (!user.value) { userSuspended.value = false; return; }
-  if (suspensionRefreshPromise) return suspensionRefreshPromise;
-  suspensionRefreshPromise = (async () => {
-    const { data, error: suspensionError } = await db().rpc('is_current_user_suspended');
-    userSuspended.value = !suspensionError && data === true;
-  })();
-  try { await suspensionRefreshPromise; } finally { suspensionRefreshPromise = null; }
+  if (suspensionRefreshPromise) {
+    suspensionRefreshQueued = true;
+    await suspensionRefreshPromise;
+    return;
+  }
+  do {
+    suspensionRefreshQueued = false;
+    suspensionRefreshPromise = (async () => {
+      const { data, error: suspensionError } = await db().rpc('is_current_user_suspended');
+      userSuspended.value = !suspensionError && data === true;
+    })();
+    try { await suspensionRefreshPromise; } finally { suspensionRefreshPromise = null; }
+  } while (suspensionRefreshQueued && Boolean(user.value));
 }
 const valueOrNull = (value: string) => value.trim() || null;
 const tapasFor = (establishmentId: string) => tapas.value.filter((tapa) => tapa.establishment_id === establishmentId);
