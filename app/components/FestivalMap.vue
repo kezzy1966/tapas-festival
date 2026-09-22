@@ -113,7 +113,7 @@ function ratingText(tapa: Tapa) {
   return `${Number(rating.average_rating).toFixed(1)} ★${props.showRatingCounts ? ` (${rating.rating_count})` : ""}`;
 }
 function statusText(venue: Establishment) {
-  if (venue.participation_status === 'withdrawn') return t('withdrawn');
+  if (venue.participation_status === 'withdrawn') return t('suspended');
   if (venue.closure_status && venue.closure_status !== 'normal') return t('closed');
   return '';
 }
