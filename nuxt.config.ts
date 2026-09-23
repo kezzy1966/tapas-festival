@@ -22,7 +22,12 @@ export default defineNuxtConfig({
   runtimeConfig: {
     nominatimContactEmail: '',
     adminPasswordResetServiceRoleKey: '',
-    public: { buildReference },
+    public: {
+      buildReference,
+      // Defaults to false locally and in Preview. Set NUXT_PUBLIC_HOLDING_MODE=true
+      // only in Vercel Production to show the temporary public holding page.
+      holdingMode: false,
+    },
   },
   modules: ['@pinia/nuxt', '@nuxt/icon', '@nuxtjs/supabase','@vercel/analytics'],
   supabase: {
@@ -42,9 +47,10 @@ export default defineNuxtConfig({
   },
   app: {
     head: {
-      htmlAttrs: { lang: 'en' },
-      title: 'Food Journal | Tastemap',
-      meta: [{ name: 'description', content: 'Personal London restaurant map with Elo pairwise ranking, curated lists, and taste stats' }],
+      htmlAttrs: { lang: 'es' },
+      link: [
+        { rel: 'icon', type: 'image/x-icon', href: '/favicon.ico' },
+      ],
     },
   },
 });

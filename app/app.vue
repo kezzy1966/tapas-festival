@@ -9,6 +9,28 @@ const supabaseUser = useSupabaseUser();
 const { language, setLanguage } = useFestivalLanguage();
 const { emergencyShutdown, loaded: emergencyControlsLoaded, refresh: refreshEmergencyControls } = usePublicSiteControls();
 const emergencyAdminAccess = ref(false);
+const holdingMode = computed(() => String(useRuntimeConfig().public.holdingMode).toLowerCase() === 'true');
+const showHoldingPage = computed(() => holdingMode.value && route.path !== '/admin' && route.path !== '/reset-password');
+const siteUrl = 'https://tapascastellon.es';
+const canonicalUrl = computed(() => new URL(route.path, siteUrl).toString());
+const defaultDescription = 'Descubre bares y tapas participantes en Castellón, consulta valoraciones, reseñas y clasificaciones.';
+
+useHead({
+  htmlAttrs: { lang: language },
+  titleTemplate: (titleChunk) => titleChunk ? titleChunk + ' · Tapas Castellón' : 'Tapas Castellón',
+  meta: [
+    { name: 'description', content: defaultDescription },
+    { property: 'og:title', content: 'Tapas Castellón' },
+    { property: 'og:description', content: defaultDescription },
+    { property: 'og:site_name', content: 'Tapas Castellón' },
+    { property: 'og:type', content: 'website' },
+    { property: 'og:url', content: canonicalUrl, key: 'og-url' },
+    { name: 'twitter:card', content: 'summary' },
+    { name: 'twitter:title', content: 'Tapas Castellón' },
+    { name: 'twitter:description', content: defaultDescription },
+  ],
+  link: [{ rel: 'canonical', href: canonicalUrl, key: 'canonical' }],
+});
 
 let emergencyRefreshPromise: Promise<void> | null = null;
 async function refreshEmergencyAccess() {
@@ -57,7 +79,8 @@ const showMaintenance = computed(() => emergencyControlsLoaded.value && emergenc
     >
       Skip to main content
     </a>
-    <section v-if="showMaintenance" class="flex min-h-screen items-center justify-center bg-stone-50 p-6 text-center text-stone-900">
+    <ComingSoonPage v-if="showHoldingPage" />
+    <section v-else-if="showMaintenance" class="flex min-h-screen items-center justify-center bg-stone-50 p-6 text-center text-stone-900">
       <div class="max-w-lg rounded-2xl border border-stone-200 bg-white p-8 shadow-sm">
         <div class="mb-6 flex justify-center overflow-hidden rounded-md border border-stone-300 text-lg font-bold"><button type="button" class="min-h-11 min-w-11 px-3 py-2" :class="language === 'es' ? 'bg-emerald-700 text-white' : 'bg-white text-stone-600'" aria-label="Español" @click="setLanguage('es')">🇪🇸</button><button type="button" class="min-h-11 min-w-11 border-l border-stone-300 px-3 py-2" :class="language === 'en' ? 'bg-emerald-700 text-white' : 'bg-white text-stone-600'" aria-label="English" @click="setLanguage('en')">🇬🇧</button></div>
         <template v-if="language === 'es'"><h1 class="font-display text-2xl font-bold">Temporalmente no disponible</h1><p class="mt-3 text-stone-600">La web del Festival de Tapas de Castellón no está disponible temporalmente. Por favor, inténtalo de nuevo más tarde.</p></template>

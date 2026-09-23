@@ -1,0 +1,6 @@
+<script setup lang="ts">
+const { language } = useFestivalLanguage();
+const description = computed(() => language.value === 'es' ? 'Información de contacto de Tapas Castellón.' : 'Contact information for Tapas Castellón.');
+useSeoMeta({ title: computed(() => language.value === 'es' ? 'Contacto' : 'Contact'), description, ogTitle: computed(() => language.value === 'es' ? 'Contacto · Tapas Castellón' : 'Contact · Tapas Castellón'), ogDescription: description, twitterTitle: computed(() => language.value === 'es' ? 'Contacto · Tapas Castellón' : 'Contact · Tapas Castellón'), twitterDescription: description });
+</script>
+<template><PublicInfoLayout :eyebrow="'Tapas Castellón'" :title="language === 'es' ? 'Contacto' : 'Contact'"><template v-if="language === 'es'"><p>Los datos de contacto se añadirán antes del lanzamiento público de la web.</p><p class="mt-5">Cuando estén disponibles, esta página incluirá un medio de contacto directo para consultas sobre Tapas Castellón.</p></template><template v-else><p>Contact details will be added before the public launch of the website.</p><p class="mt-5">When available, this page will include a direct way to contact Tapas Castellón about the website.</p></template></PublicInfoLayout></template>
