@@ -23,8 +23,8 @@ useSeoMeta({
     <section class="w-full max-w-xl rounded-2xl border border-stone-200 bg-white p-7 text-center shadow-sm sm:p-12">
       <div class="mb-8 flex justify-center">
         <div class="flex overflow-hidden rounded-md border border-stone-300 text-sm font-bold" :aria-label="language === 'es' ? 'Idioma' : 'Language'">
-          <button type="button" class="min-h-10 min-w-10 px-2" :class="language === 'es' ? 'bg-emerald-700 text-white' : 'bg-white text-stone-600'" :aria-pressed="language === 'es'" aria-label="Español" @click="setLanguage('es')">ES</button>
-          <button type="button" class="min-h-10 min-w-10 border-l border-stone-300 px-2" :class="language === 'en' ? 'bg-emerald-700 text-white' : 'bg-white text-stone-600'" :aria-pressed="language === 'en'" aria-label="English" @click="setLanguage('en')">EN</button>
+          <button type="button" class="min-h-10 min-w-10 px-2" :class="language === 'es' ? 'bg-emerald-700 text-white' : 'bg-white text-stone-600'" :aria-pressed="language === 'es'" aria-label="Español" @click="setLanguage('es')">ESPAÑOL</button>
+          <button type="button" class="min-h-10 min-w-10 border-l border-stone-300 px-2" :class="language === 'en' ? 'bg-emerald-700 text-white' : 'bg-white text-stone-600'" :aria-pressed="language === 'en'" aria-label="English" @click="setLanguage('en')">ENGLISH</button>
         </div>
       </div>
 
