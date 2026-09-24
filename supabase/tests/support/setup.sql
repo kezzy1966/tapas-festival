@@ -28,11 +28,11 @@ insert into auth.users(id, email, raw_user_meta_data) values
   ('00000000-0000-0000-0000-000000000003', 'bob-private@example.invalid', '{}');
 insert into festival_private.admin_users(user_id) values ('00000000-0000-0000-0000-000000000001');
 
-insert into festival.festivals(id, slug, name_en, name_es, start_date, end_date, default_tapa_price, city, publication_status, reviews_enabled) values
-  ('10000000-0000-0000-0000-000000000001', 'test-public', 'English festival', null, '2000-01-01', '2000-01-02', 5, 'Castellón', 'published', true),
-  ('10000000-0000-0000-0000-000000000002', 'test-draft', null, 'Festival español', '2100-01-01', '2100-01-02', 6, 'Castellón', 'draft', true),
-  ('10000000-0000-0000-0000-000000000003', 'test-archived', 'Archived', null, '2000-01-01', '2000-01-02', 4, 'Castellón', 'archived', true),
-  ('10000000-0000-0000-0000-000000000004', 'test-disabled', 'Voting disabled', null, '2100-01-01', '2100-01-02', 7, 'Castellón', 'published', false);
+insert into festival.festivals(id, slug, name_en, name_es, festival_year, start_date, end_date, default_tapa_price, city, publication_status, reviews_enabled) values
+  ('10000000-0000-0000-0000-000000000001', 'test-public', 'English festival', null, 2025, '2000-01-01', '2000-01-02', 5, 'Castellón', 'published', true),
+  ('10000000-0000-0000-0000-000000000002', 'test-draft', null, 'Festival español', 2100, '2100-01-01', '2100-01-02', 6, 'Castellón', 'draft', true),
+  ('10000000-0000-0000-0000-000000000003', 'test-archived', 'Archived', null, 2025, '2000-01-01', '2000-01-02', 4, 'Castellón', 'archived', true),
+  ('10000000-0000-0000-0000-000000000004', 'test-disabled', 'Voting disabled', null, 2100, '2100-01-01', '2100-01-02', 7, 'Castellón', 'published', false);
 
 insert into festival.venues(id, canonical_name) values
   ('70000000-0000-0000-0000-000000000001', 'Public venue'),

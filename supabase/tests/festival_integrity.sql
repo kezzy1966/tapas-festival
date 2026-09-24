@@ -5,6 +5,14 @@ select set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-0000000
 
 select pg_temp.assert_true((select name_en is not null and name_es is null and default_language = 'en' from festival.festivals where slug = 'test-public'), 'English-only festival and English default are valid');
 select pg_temp.assert_true((select name_en is null and name_es is not null from festival.festivals where slug = 'test-draft'), 'Spanish-only festival is valid');
+select pg_temp.assert_true((select festival_year = 2025 and extract(year from start_date) = 2000 from festival.festivals where slug = 'test-public'), 'edition year is independent of operational start date');
+select pg_temp.expect_error($q$update festival.festivals set festival_year = null where slug = 'test-public'$q$, '23502', 'festival year is required');
+select pg_temp.expect_error($q$update festival.festivals set festival_year = 1999 where slug = 'test-public'$q$, '23514', 'festival year below 2000 rejected');
+select pg_temp.expect_error($q$update festival.festivals set festival_year = 2101 where slug = 'test-public'$q$, '23514', 'festival year above 2100 rejected');
+insert into festival.festivals(slug, name_en, festival_year, start_date, end_date, default_tapa_price, city) values
+  ('same-edition-year-one', 'Same edition year one', 2026, '2000-01-01', '2000-01-02', 5, 'Castellón'),
+  ('same-edition-year-two', 'Same edition year two', 2026, '2100-01-01', '2100-01-02', 5, 'Castellón');
+select pg_temp.assert_true((select count(*) = 2 from festival.festivals where festival_year = 2026), 'multiple festival rows may share an edition year');
 update festival.festivals set default_language = 'es', name_es = 'Festival público' where slug = 'test-public';
 select pg_temp.assert_true((select default_language = 'es' and name_en is not null and name_es is not null from festival.festivals where slug = 'test-public'), 'both translations and changing default language need no schema change');
 select pg_temp.expect_error($q$update festival.festivals set name_en = ' ', name_es = null where slug = 'test-public'$q$, '23514', 'at least one festival name required');
@@ -121,8 +129,8 @@ begin isolation level repeatable read;
 do $$
 begin
   begin
-    insert into festival.festivals(slug,name_en,start_date,end_date,default_tapa_price,city)
-    values ('repeatable-read-test','Test','2000-01-01','2000-01-02',5,'Test');
+    insert into festival.festivals(slug,name_en,festival_year,start_date,end_date,default_tapa_price,city)
+    values ('repeatable-read-test','Test',2025,'2000-01-01','2000-01-02',5,'Test');
     raise exception 'ASSERTION FAILED: repeatable-read content write succeeded';
   exception when sqlstate '25000' then null;
   end;

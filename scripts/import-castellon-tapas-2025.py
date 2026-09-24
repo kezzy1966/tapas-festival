@@ -133,7 +133,7 @@ def upload(base, headers, archive, original, destination):
         raise
 
 def main():
-    parser = argparse.ArgumentParser(); parser.add_argument('--apply', action='store_true'); parser.add_argument('--start-date', default='2026-09-01'); parser.add_argument('--end-date', default='2026-09-30'); parser.add_argument('--book', type=Path, default=DEFAULT_BOOK); parser.add_argument('--photos', type=Path, default=DEFAULT_PHOTOS)
+    parser = argparse.ArgumentParser(); parser.add_argument('--apply', action='store_true'); parser.add_argument('--festival-year', type=int, default=2025); parser.add_argument('--start-date', default='2026-09-01'); parser.add_argument('--end-date', default='2026-09-30'); parser.add_argument('--book', type=Path, default=DEFAULT_BOOK); parser.add_argument('--photos', type=Path, default=DEFAULT_PHOTOS)
     args = parser.parse_args(); venues, image_map = source(args.book, args.photos)
     for venue in venues: hours(venue)
     if not args.apply:
@@ -141,7 +141,7 @@ def main():
     base, headers = db_client()
     slug = 'castellon-tapas-2025'
     festival = one_or_none(select(base, headers, 'festivals', {'select':'id','slug':'eq.' + slug}), 'festival slug')
-    festival_payload = {'slug':slug,'name_en':'Castellón Tapas Festival 2025','name_es':None,'start_date':args.start_date,'end_date':args.end_date,'default_tapa_price':5,'currency_code':'EUR','city':'Castellón de la Plana','timezone':'Europe/Madrid','default_language':'en','publication_status':'published','reviews_enabled':True}
+    festival_payload = {'slug':slug,'name_en':'Castellón Tapas Festival 2025','name_es':None,'festival_year':args.festival_year,'start_date':args.start_date,'end_date':args.end_date,'default_tapa_price':5,'currency_code':'EUR','city':'Castellón de la Plana','timezone':'Europe/Madrid','default_language':'en','publication_status':'published','reviews_enabled':True}
     festival = save(base, headers, 'festivals', festival_payload, festival); festival_id = festival['id']
     definition = one_or_none(select(base, headers, 'field_definitions', {'select':'id','festival_id':'eq.'+festival_id,'applies_to':'eq.establishment','key':'eq.instagram'}), 'Instagram field definition')
     definition = save(base, headers, 'field_definitions', {'festival_id':festival_id,'key':'instagram','label_en':'Instagram','label_es':'Instagram','field_type':'text','applies_to':'establishment','required':False,'active':True,'sort_order':0}, definition)
