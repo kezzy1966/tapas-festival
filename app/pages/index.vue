@@ -665,19 +665,6 @@ onUnmounted(() => {
           <p v-if="showRankings" class="mt-2 text-xs text-stone-500">{{ t('rankingDescription') }}</p><dl class="mt-2 grid gap-1"><div><dt class="inline font-semibold text-stone-800">{{ t('location') }}</dt><dd class="inline"> {{ festival.city }}</dd></div></dl>
         </section>
         <footer class="mx-4 mt-6 pb-4 text-center sm:mx-0">
-          <div class="mx-auto mb-4 max-w-2xl text-xs leading-relaxed text-stone-500">
-            <h2 class="font-semibold text-stone-700">{{ language === 'es' ? 'Agradecimientos' : 'Acknowledgements' }}</h2>
-            <p v-if="language === 'es'" class="mt-1">
-              Un agradecimiento especial a Robert, creador de
-              <a class="font-semibold text-emerald-700 underline" href="https://github.com/Rocabor/restaurant-ranking-app" target="_blank" rel="noopener noreferrer">Restaurant Ranking App</a>,
-              cuyo proyecto de código abierto proporcionó la base original de esta web. Desde entonces, la web del Festival de Tapas de Castellón se ha desarrollado y ampliado considerablemente con funciones específicas para el festival, administración, informes y nuevas funcionalidades.
-            </p>
-            <p v-else class="mt-1">
-              Special thanks to Robert, creator of
-              <a class="font-semibold text-emerald-700 underline" href="https://github.com/Rocabor/restaurant-ranking-app" target="_blank" rel="noopener noreferrer">Restaurant Ranking App</a>,
-              whose open-source project provided the original foundation for this website. The Castellón Tapas Festival site has since been extensively developed and expanded with festival-specific features, administration, reporting and functionality.
-            </p>
-          </div>
           <nav class="mb-3 flex flex-wrap justify-center gap-x-4 gap-y-2 text-xs" :aria-label="language === 'es' ? 'Enlaces del sitio' : 'Site links'">
             <NuxtLink class="font-semibold text-emerald-700 underline" to="/about">{{ language === 'es' ? 'Acerca de' : 'About' }}</NuxtLink>
             <NuxtLink class="font-semibold text-emerald-700 underline" to="/contact">{{ language === 'es' ? 'Contacto' : 'Contact' }}</NuxtLink>
