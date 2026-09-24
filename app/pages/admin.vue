@@ -37,6 +37,11 @@ const authBusy = ref(false);
 const festivals = ref<any[]>([]);
 const establishments = ref<any[]>([]);
 const tapas = ref<any[]>([]);
+const allEstablishments = ref<any[]>([]);
+const allTapas = ref<any[]>([]);
+const allFieldDefinitions = ref<any[]>([]);
+const allFieldValues = ref<any[]>([]);
+const selectedFestivalId = ref('');
 const editingFestival = ref<any | null>(null);
 const editingEstablishment = ref<any | null>(null);
 const editingTapa = ref<any | null>(null);
@@ -240,7 +245,7 @@ function chooseTapaPhoto(event: Event) {
 function requestEstablishmentPhotoRemoval() { if (!window.confirm('Remove this photo?')) return; establishmentPhotoFile.value = null; establishmentPhotoRemoveRequested.value = true; establishmentPhotoPreview.value = ''; establishmentPhotoFeedback.value = blankPhotoFeedback(); }
 function requestTapaPhotoRemoval() { if (!window.confirm('Remove this photo?')) return; tapaPhotoFile.value = null; tapaPhotoRemoveRequested.value = true; tapaPhotoPreview.value = ''; tapaPhotoFeedback.value = blankPhotoFeedback(); }
 
-const blankFestival = () => ({ name_en: '', name_es: '', slug: '', start_date: '', end_date: '', city: '', default_tapa_price: '5.00', publication_status: 'draft', reviews_enabled: true, show_rankings: true, show_total_rating_count: true });
+const blankFestival = () => ({ name_en: '', name_es: '', slug: '', festival_year: '', start_date: '', end_date: '', city: '', default_tapa_price: '5.00', publication_status: 'draft', reviews_enabled: true, show_rankings: true, show_total_rating_count: true });
 const blankEstablishment = () => ({ festival_id: '', name: '', description_en: '', description_es: '', address: '', coordinates: '', photo_path: '', phone: '', instagram: '', whatsapp: '', facebook_url: '', website_url: '', hours_notes_en: '', hours_notes_es: '', is_published: false, participation_status: 'active', closure_status: 'normal' });
 const blankTapa = () => ({ establishment_id: '', name_en: '', name_es: '', description_en: '', description_es: '', price_override: '', photo_path: '', festival_number: '', is_published: false, participation_status: 'active' });
 const festivalForm = ref(blankFestival());
@@ -616,8 +621,8 @@ function controlsCalendarDate(timezone: string) {
 }
 function controlsFestivalName(festival: any) { return festival?.name_en || festival?.name_es || festival?.slug || 'Unnamed festival'; }
 function controlsFestivalYear(festival: any) {
-  const year = String(festival?.start_date || '').slice(0, 4);
-  return year && !/\b(?:19|20)\d{2}\b/.test(controlsFestivalName(festival)) ? year : '';
+  const year = Number(festival?.festival_year);
+  return Number.isInteger(year) ? String(year) : '';
 }
 function controlsFestivalStatus(festival: any) {
   const value = String(festival?.publication_status || 'unknown');
@@ -625,8 +630,9 @@ function controlsFestivalStatus(festival: any) {
 }
 function controlsFestivalOptionLabel(festival: any) {
   const year = controlsFestivalYear(festival);
-  return controlsFestivalName(festival) + (year ? ' · ' + year : '') + ' — ' + controlsFestivalStatus(festival);
+  return (year ? year + ' — ' : '') + controlsFestivalName(festival) + ' — ' + controlsFestivalStatus(festival);
 }
+function festivalOptionLabel(festival: any) { return controlsFestivalOptionLabel(festival); }
 function isActivePublishedControlsFestival(festival: any) {
   if (festival?.publication_status !== 'published') return false;
   const today = controlsCalendarDate(festival.timezone || 'Europe/Madrid');
@@ -634,9 +640,37 @@ function isActivePublishedControlsFestival(festival: any) {
 }
 function defaultControlsFestivalId() {
   const published = festivals.value.filter((festival) => festival.publication_status === 'published');
-  return published.find(isActivePublishedControlsFestival)?.id || published[0]?.id || festivals.value[0]?.id || '';
+  return published.find(isActivePublishedControlsFestival)?.id
+    || [...published].sort((a, b) => Number(b.festival_year) - Number(a.festival_year))[0]?.id
+    || [...festivals.value].sort((a, b) => Number(b.festival_year) - Number(a.festival_year))[0]?.id
+    || '';
+}
+function sortFestivals(rows: any[]) { return [...rows].sort((a, b) => Number(b.festival_year) - Number(a.festival_year) || String(a.name_en || a.name_es || a.slug).localeCompare(String(b.name_en || b.name_es || b.slug))); }
+function applyFestivalContext() {
+  const festivalId = selectedFestivalId.value;
+  establishments.value = allEstablishments.value.filter((row) => row.festival_id === festivalId);
+  const establishmentIds = new Set(establishments.value.map((row) => row.id));
+  tapas.value = allTapas.value.filter((row) => establishmentIds.has(row.establishment_id));
+  fieldDefinitions.value = allFieldDefinitions.value.filter((row) => row.festival_id === festivalId);
+  const definitionIds = new Set(fieldDefinitions.value.map((row) => row.id));
+  fieldValues.value = allFieldValues.value.filter((row) => definitionIds.has(row.field_definition_id) && establishments.value.some((establishment) => establishment.id === row.establishment_id));
+}
+function selectFestivalContext() {
+  if (!selectedFestivalId.value) return;
+  controlsFestivalId.value = selectedFestivalId.value;
+  reportFestivalId.value = selectedFestivalId.value;
+  detailTapaId.value = '';
+  detailRows.value = [];
+  reportRows.value = [];
+  expandedReportRows.value = {};
+  resetEstablishment();
+  resetTapa();
+  applyFestivalContext();
+  if (tab.value === 'controls') void loadControls();
+  if (tab.value === 'reports') void loadRatingActivity();
 }
 const controlsFestival = computed(() => festivals.value.find((festival) => festival.id === controlsFestivalId.value) || null);
+const selectedFestival = computed(() => festivals.value.find((festival) => festival.id === selectedFestivalId.value) || null);
 function openEstablishmentAttentionFilter(filter: EstablishmentAttentionFilter) { establishmentAttentionFilter.value = filter; selectTab("establishments"); }
 function openTapaAttentionFilter(filter: TapaAttentionFilter) { tapaAttentionFilter.value = filter; selectTab("tapas"); }
 function openHiddenReviews() { reviewStatus.value = "hidden"; reviewPage.value = 0; selectTab("reviews"); }
@@ -699,7 +733,7 @@ async function load() {
   loading.value = true;
   error.value = '';
   const [festivalResult, establishmentResult, tapaResult, fieldDefinitionResult, fieldValueResult] = await Promise.all([
-    db().from('festivals').select('*').order('start_date', { ascending: false }),
+    db().from('festivals').select('*'),
     db().from('establishments').select('*').order('name'),
     db().from('tapas').select('*').order('festival_number', { ascending: true, nullsFirst: false }),
     db().from('field_definitions').select('*').eq('applies_to', 'establishment').eq('key', 'instagram'),
@@ -707,11 +741,15 @@ async function load() {
   ]);
   const firstError = festivalResult.error || establishmentResult.error || tapaResult.error || fieldDefinitionResult.error || fieldValueResult.error;
   if (firstError) error.value = firstError.message;
-  festivals.value = festivalResult.data || [];
-  establishments.value = establishmentResult.data || [];
-  tapas.value = tapaResult.data || [];
-  fieldDefinitions.value = fieldDefinitionResult.data || [];
-  fieldValues.value = fieldValueResult.data || [];
+  festivals.value = sortFestivals(festivalResult.data || []);
+  allEstablishments.value = establishmentResult.data || [];
+  allTapas.value = tapaResult.data || [];
+  allFieldDefinitions.value = fieldDefinitionResult.data || [];
+  allFieldValues.value = fieldValueResult.data || [];
+  if (!festivals.value.some((festival) => festival.id === selectedFestivalId.value)) selectedFestivalId.value = defaultControlsFestivalId();
+  controlsFestivalId.value = selectedFestivalId.value;
+  reportFestivalId.value = selectedFestivalId.value;
+  applyFestivalContext();
   loading.value = false;
 }
 
@@ -784,7 +822,9 @@ function closeTapaEditor() { resetTapa(); }
 
 async function saveFestival() {
   saving.value = true; error.value = ''; notice.value = '';
-  const payload = { ...festivalForm.value, name_es: valueOrNull(festivalForm.value.name_es), city: festivalForm.value.city.trim(), default_tapa_price: Number(festivalForm.value.default_tapa_price) };
+  const festivalYear = Number(festivalForm.value.festival_year);
+  if (!Number.isInteger(festivalYear) || festivalYear < 2000 || festivalYear > 2100) { saving.value = false; error.value = 'Festival year must be a whole year from 2000 to 2100.'; return; }
+  const payload = { ...festivalForm.value, festival_year: festivalYear, name_es: valueOrNull(festivalForm.value.name_es), city: festivalForm.value.city.trim(), default_tapa_price: Number(festivalForm.value.default_tapa_price) };
   const result = editingFestival.value ? await db().from('festivals').update(payload).eq('id', editingFestival.value.id) : await db().from('festivals').insert(payload);
   saving.value = false;
   if (result.error) error.value = result.error.message; else { notice.value = 'Festival saved.'; resetFestival(); await load(); }
@@ -803,6 +843,8 @@ function parseCoordinates(value: string) {
 async function saveEstablishment() {
   saving.value = true; error.value = ''; notice.value = '';
   const f = establishmentForm.value;
+  if (!editingEstablishment.value) { saving.value = false; error.value = 'Creating a bar is temporarily unavailable until a permanent venue can be selected. Edit existing festival participation records instead.'; return; }
+  if (f.festival_id !== selectedFestivalId.value || editingEstablishment.value.festival_id !== selectedFestivalId.value) { saving.value = false; error.value = 'This bar belongs to a different festival context. Switch festivals before editing it.'; return; }
   const coordinates = parseCoordinates(f.coordinates);
   if ('error' in coordinates) { error.value = coordinates.error; saving.value = false; return; }
   const previousPath = editingEstablishment.value?.photo_path || null;
@@ -856,6 +898,7 @@ async function saveTapa() {
   const f = tapaForm.value;
   if (!valueOrNull(f.name_es) && !valueOrNull(f.name_en)) { saving.value = false; error.value = 'Enter a Spanish or English tapa name.'; return; }
   const festivalId = establishments.value.find((venue) => venue.id === f.establishment_id)?.festival_id;
+  if (!festivalId || festivalId !== selectedFestivalId.value) { saving.value = false; error.value = 'Select an establishment from the current festival context.'; return; }
   const programmeNumber = numberOrNull(f.festival_number);
   const duplicate = programmeNumber != null && tapas.value.find((item) => item.id !== editingTapa.value?.id && item.festival_number === programmeNumber && establishments.value.find((venue) => venue.id === item.establishment_id)?.festival_id === festivalId);
   if (duplicate) { saving.value = false; error.value = `Programme number ${programmeNumber} is already used in this festival.`; return; }
@@ -908,6 +951,11 @@ watch(user, () => {
       <header class="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div><p class="text-sm font-semibold text-emerald-700">tapas-festival</p><h1 class="font-display text-3xl font-bold">Admin</h1></div>
         <div class="flex flex-wrap items-center justify-end gap-3">
+          <label v-if="user && isAdmin && !checkingAccess" class="flex min-w-[18rem] items-center gap-2 text-left text-sm font-semibold text-stone-700">Festival
+            <select v-model="selectedFestivalId" class="min-w-0 flex-1 rounded border border-emerald-700 bg-white px-2 py-2" aria-label="Selected festival" @change="selectFestivalContext">
+              <option v-for="festival in festivals" :key="festival.id" :value="festival.id">{{ festivalOptionLabel(festival) }}</option>
+            </select>
+          </label>
           <NuxtLink to="/" class="rounded-lg border border-emerald-700 px-3 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50">← Back to Festival</NuxtLink>
           <div v-if="user && isAdmin && !checkingAccess" class="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 text-right text-sm text-stone-700"><span class="font-semibold">Logged in as:</span><span class="font-mono">{{ maskAdminIdentity(user.email) }}</span><span aria-hidden="true">—</span><span class="font-semibold">{{ currentAdminRoleLabel }}</span></div>
           <button v-if="user" class="rounded-lg border border-stone-300 px-3 py-2 text-sm" @click="logout">Log out</button>
@@ -941,7 +989,7 @@ watch(user, () => {
           <div><h2 class="text-xl font-bold">Controls</h2><p class="mt-1 text-sm text-stone-600">Operational controls for the selected festival. Emergency shutdown is site-wide.</p></div>
           <p v-if="controls?.public_read_only" class="rounded border-2 border-amber-500 bg-amber-50 p-3 font-extrabold text-amber-900">PUBLIC SITE IS CURRENTLY READ-ONLY</p>
           <div class="rounded-xl border bg-white p-4">
-            <label class="block text-sm font-semibold">Festival being controlled<select v-model="controlsFestivalId" class="mt-1 block w-full rounded border p-2" @change="loadControls"><option v-for="festival in festivals" :key="festival.id" :value="festival.id">{{ controlsFestivalOptionLabel(festival) }}</option></select></label>
+            <label class="block text-sm font-semibold">Festival being controlled<select v-model="controlsFestivalId" class="mt-1 block w-full rounded border p-2" @change="selectedFestivalId = controlsFestivalId; selectFestivalContext()"><option v-for="festival in festivals" :key="festival.id" :value="festival.id">{{ controlsFestivalOptionLabel(festival) }}</option></select></label>
             <div v-if="controlsFestival" class="mt-3 rounded-lg border-2 border-amber-400 bg-amber-50 p-3 text-sm text-amber-950"><p class="font-semibold">You are changing Controls for</p><p class="mt-1 text-base font-bold">{{ controlsFestivalName(controlsFestival) }}<span v-if="controlsFestivalYear(controlsFestival)"> · {{ controlsFestivalYear(controlsFestival) }}</span></p><p class="mt-1">Publication status: <strong>{{ controlsFestivalStatus(controlsFestival) }}</strong></p></div>
           </div>
           <div v-if="controls" class="rounded-xl border bg-white p-4"><h3 class="font-bold">Status summary</h3><dl class="mt-3 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4"><div><dt>Public site</dt><dd class="font-bold" :class="controlsSiteShutdown ? 'text-red-700' : 'text-emerald-700'">{{ controlsSiteShutdown ? 'DISABLED' : 'ONLINE' }}</dd></div><div v-for="item in [['Festival','festival_active'],['Read-only','public_read_only'],['Ratings','ratings_enabled'],['Reviews','reviews_enabled'],['Rankings','rankings_enabled'],['Rating counts','total_rating_counts_enabled'],['Want to Try','want_to_try_enabled']]" :key="item[1]"><dt>{{ item[0] }}</dt><dd class="font-bold" :class="controls[item[1] as keyof FestivalControls] ? 'text-emerald-700' : 'text-red-700'">{{ controls[item[1] as keyof FestivalControls] ? (item[1] === 'festival_active' ? 'ACTIVE' : 'ON') : (item[1] === 'festival_active' ? 'INACTIVE' : 'OFF') }}</dd></div></dl></div>
@@ -950,26 +998,26 @@ watch(user, () => {
           <div class="overflow-x-auto rounded-xl border bg-white"><div class="p-4"><h3 class="font-bold">Recent Controls activity</h3></div><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Date/time</th><th class="p-3">Administrator</th><th class="p-3">Control</th><th class="p-3">Old value</th><th class="p-3">New value</th></tr></thead><tbody><tr v-for="row in controlsAudit" :key="row.created_at + row.control" class="border-t"><td class="p-3">{{ adminDateTimeLines(row.created_at).date }} {{ adminDateTimeLines(row.created_at).time }}</td><td class="p-3">{{ row.administrator }}</td><td class="p-3">{{ row.control }}</td><td class="p-3">{{ row.previous_value ? 'ON' : 'OFF' }}</td><td class="p-3">{{ row.new_value ? 'ON' : 'OFF' }}</td></tr><tr v-if="!controlsAudit.length"><td colspan="5" class="p-4 text-stone-500">No control changes recorded.</td></tr></tbody></table></div>
         </section>
 
-        <section v-if="tab === 'festivals'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]"><div><h2 class="mb-3 text-xl font-bold">Festivals</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Name</th><th class="p-3">Dates</th><th class="p-3">Status</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in festivals" :key="row.id" class="border-t"><td class="p-3">{{ row.name_en || row.name_es }}</td><td class="p-3">{{ row.start_date }} – {{ row.end_date }}</td><td class="p-3">{{ row.publication_status }}</td><td class="p-3"><button class="text-emerald-700" @click="editFestival(row)">Edit</button></td></tr></tbody></table></div></div><form class="space-y-3 rounded-xl border bg-white p-5" @submit.prevent="saveFestival"><h2 class="text-lg font-bold">{{ editingFestival ? 'Edit festival' : 'New festival' }}</h2><input v-model="festivalForm.name_en" class="w-full rounded border p-2" placeholder="English name" required @input="updateGeneratedSlug"><input v-model="festivalForm.name_es" class="w-full rounded border p-2" placeholder="Spanish name"><input v-model="festivalForm.slug" class="w-full rounded border p-2" placeholder="slug" required @input="markSlugManual"><div class="grid grid-cols-2 gap-2"><input v-model="festivalForm.start_date" class="rounded border p-2" type="date" required><input v-model="festivalForm.end_date" class="rounded border p-2" type="date" required></div><input v-model="festivalForm.city" class="w-full rounded border p-2" placeholder="City" required><input v-model="festivalForm.default_tapa_price" class="w-full rounded border p-2" type="number" min="0" step="0.01" placeholder="Default price" required><select v-model="festivalForm.publication_status" class="w-full rounded border p-2"><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select><label class="flex gap-2 text-sm"><input v-model="festivalForm.reviews_enabled" type="checkbox"> Reviews enabled</label><label class="flex gap-2 text-sm"><input v-model="festivalForm.show_rankings" type="checkbox"> Show rankings</label><label class="flex gap-2 text-sm"><input v-model="festivalForm.show_total_rating_count" type="checkbox"> Show total tapa ratings</label><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetFestival">Clear</button></div></form></section>
+        <section v-if="tab === 'festivals'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]"><div><h2 class="mb-3 text-xl font-bold">Festivals</h2><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Edition</th><th class="p-3">Name</th><th class="p-3">Dates</th><th class="p-3">Status</th><th class="p-3"></th></tr></thead><tbody><tr v-for="row in festivals" :key="row.id" class="border-t"><td class="p-3 font-semibold">{{ row.festival_year }}</td><td class="p-3">{{ row.name_en || row.name_es }}</td><td class="p-3">{{ row.start_date }} – {{ row.end_date }}</td><td class="p-3">{{ row.publication_status }}</td><td class="p-3"><button class="text-emerald-700" @click="editFestival(row)">Edit</button></td></tr></tbody></table></div></div><form class="space-y-3 rounded-xl border bg-white p-5" @submit.prevent="saveFestival"><h2 class="text-lg font-bold">{{ editingFestival ? 'Edit festival' : 'New festival' }}</h2><label class="block text-sm font-semibold">Festival year<input v-model="festivalForm.festival_year" class="mt-1 w-full rounded border p-2" type="number" min="2000" max="2100" step="1" required></label><input v-model="festivalForm.name_en" class="w-full rounded border p-2" placeholder="English name" required @input="updateGeneratedSlug"><input v-model="festivalForm.name_es" class="w-full rounded border p-2" placeholder="Spanish name"><input v-model="festivalForm.slug" class="w-full rounded border p-2" placeholder="slug" required @input="markSlugManual"><div class="grid grid-cols-2 gap-2"><input v-model="festivalForm.start_date" class="rounded border p-2" type="date" required><input v-model="festivalForm.end_date" class="rounded border p-2" type="date" required></div><input v-model="festivalForm.city" class="w-full rounded border p-2" placeholder="City" required><input v-model="festivalForm.default_tapa_price" class="w-full rounded border p-2" type="number" min="0" step="0.01" placeholder="Default price" required><select v-model="festivalForm.publication_status" class="w-full rounded border p-2"><option value="draft">Draft</option><option value="published">Published</option><option value="archived">Archived</option></select><label class="flex gap-2 text-sm"><input v-model="festivalForm.reviews_enabled" type="checkbox"> Reviews enabled</label><label class="flex gap-2 text-sm"><input v-model="festivalForm.show_rankings" type="checkbox"> Show rankings</label><label class="flex gap-2 text-sm"><input v-model="festivalForm.show_total_rating_count" type="checkbox"> Show total tapa ratings</label><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetFestival">Clear</button></div></form></section>
 
         <section v-if="tab === 'establishments'" class="grid gap-8 lg:grid-cols-[minmax(0,1fr)_440px]">
           <div><div class="mb-3 flex flex-wrap items-end justify-between gap-3"><div><h2 class="text-xl font-bold">Establishments</h2><p v-if="establishmentAttentionFilter !== 'all'" class="mt-1 text-sm text-stone-600">Filter: {{ establishmentAttentionLabel }} · {{ filteredEstablishments.length }} result{{ filteredEstablishments.length === 1 ? '' : 's' }}</p></div><label class="text-sm font-semibold">Sort<select v-model="establishmentSort" class="ml-2 rounded border p-1.5 font-normal"><option value="number">Number</option><option value="alphabetical">A–Z</option></select></label><button v-if="establishmentAttentionFilter !== 'all'" type="button" class="rounded border px-3 py-1.5 text-sm font-semibold" @click="clearEstablishmentAttentionFilter">Show all</button></div><div class="overflow-x-auto rounded-xl border bg-white"><table class="w-full text-left text-sm"><thead class="bg-stone-100"><tr><th class="p-3">Number</th><th class="p-3">Name</th><th class="p-3">Address</th><th class="p-3">Festival</th><th class="p-3">Photo</th><th class="p-3">Hours</th><th class="p-3">Status</th><th class="p-3"></th></tr></thead><tbody><template v-for="row in filteredEstablishments" :key="row.id"><tr class="border-t"><td class="p-3 tabular-nums">{{ establishmentNumber(row) ?? '—' }}</td><td class="p-3 font-medium">{{ row.name }}</td><td class="p-3">{{ row.address || '—' }}</td><td class="p-3">{{ festivals.find(f => f.id === row.festival_id)?.name_en || '—' }}</td><td class="whitespace-nowrap p-3">{{ missingPhoto(row) ? 'Missing' : 'Present' }}</td><td class="whitespace-nowrap p-3">{{ missingOpeningHours(row) ? 'Missing' : 'Present' }}</td><td class="p-3"><span class="rounded-full px-2 py-1 text-xs font-semibold" :class="row.participation_status === 'withdrawn' ? 'bg-red-100 text-red-800' : 'bg-emerald-100 text-emerald-800'">{{ row.participation_status === 'withdrawn' ? 'Suspended' : 'Active' }}</span></td><td class="p-3"><div class="flex flex-wrap items-center gap-2"><button type="button" class="font-semibold" :class="row.participation_status === 'withdrawn' ? 'text-emerald-700' : 'text-red-700'" :disabled="saving" @click="toggleEstablishmentParticipation(row)">{{ row.participation_status === 'withdrawn' ? 'Reactivate' : 'Suspend' }}</button><button type="button" class="font-semibold text-emerald-700" @click="editEstablishment(row)">Edit</button></div></td></tr><tr v-if="editingEstablishment?.id === row.id" class="border-t bg-stone-50 lg:hidden"><td colspan="7" class="p-3"><form ref="establishmentFormElement" class="lg:hidden scroll-mt-4 space-y-4 rounded-xl border bg-white p-5" @submit.prevent="saveEstablishment">
             <div class="mb-3 flex items-center justify-between gap-3"><h2 class="text-lg font-bold">{{ editingEstablishment ? 'Edit establishment' : 'New establishment' }}</h2><button type="button" class="lg:hidden rounded border px-2 py-1 text-sm font-semibold" @click="closeEstablishmentEditor">Close editor</button></div>
-            <select v-model="establishmentForm.festival_id" class="w-full rounded border p-2" required><option value="" disabled>Festival</option><option v-for="f in festivals" :key="f.id" :value="f.id">{{ f.name_en || f.name_es }}</option></select>
+            <select v-model="establishmentForm.festival_id" class="w-full rounded border p-2" :disabled="Boolean(editingEstablishment)" required><option value="" disabled>Festival</option><option v-for="f in festivals" :key="f.id" :value="f.id">{{ festivalOptionLabel(f) }}</option></select>
             <div class="grid gap-3 sm:grid-cols-2"><input v-model="establishmentForm.name" class="rounded border p-2 sm:col-span-2" placeholder="Name" required><input v-model="establishmentForm.address" class="rounded border p-2 sm:col-span-2" placeholder="Address"><label class="block text-sm font-medium text-stone-700 sm:col-span-2">Google Maps coordinates<input v-model="establishmentForm.coordinates" class="mt-1 w-full rounded border p-2 font-mono text-sm" type="text" inputmode="decimal" placeholder="39.979579659748154, -0.030992736520370705"></label><div class="sm:col-span-2 rounded border border-stone-200 p-3"><p class="text-sm font-semibold">Photo</p><div v-if="establishmentPhotoFeedback.state !== 'idle'" class="mt-2 rounded border p-3 text-sm" :class="establishmentPhotoFeedback.state === 'success' ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : establishmentPhotoFeedback.state === 'error' ? 'border-red-300 bg-red-50 text-red-900' : 'border-stone-200 bg-stone-50 text-stone-700'"><p class="font-semibold">{{ establishmentPhotoFeedback.state === 'success' ? '✓ Photo uploaded successfully' : establishmentPhotoFeedback.state === 'processing' ? 'Compressing and uploading…' : establishmentPhotoFeedback.state === 'error' ? 'Photo upload failed' : 'Photo selected — not uploaded yet' }}</p><p v-if="establishmentPhotoFeedback.originalName" class="mt-1 break-all text-xs">{{ establishmentPhotoFeedback.originalName }}</p><p v-if="establishmentPhotoFeedback.originalBytes" class="text-xs">Original: {{ formatPhotoSize(establishmentPhotoFeedback.originalBytes) }}</p><template v-if="establishmentPhotoFeedback.state === 'success'"><p>Saved: {{ formatPhotoSize(establishmentPhotoFeedback.storedBytes) }} · Reduction: {{ photoReduction(establishmentPhotoFeedback) }}%</p><p class="mt-1 break-all text-xs">Stored: {{ establishmentPhotoFeedback.path }}</p></template><p v-if="establishmentPhotoFeedback.error" class="mt-1 text-xs">{{ establishmentPhotoFeedback.error }}</p></div><div v-if="establishmentPhotoPreview" class="mt-2 flex flex-wrap items-center gap-3"><img :src="establishmentPhotoPreview" alt="Establishment preview" class="h-20 w-20 rounded object-cover"><button type="button" class="rounded border px-3 py-2 text-sm font-semibold" @click="requestEstablishmentPhotoRemoval">Remove photo</button></div><label class="mt-2 inline-flex cursor-pointer rounded border px-3 py-2 text-sm font-semibold"><span>{{ establishmentPhotoPreview ? "Replace photo" : "Choose photo / Upload photo" }}</span><input class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="chooseEstablishmentPhoto"></label><p class="mt-1 text-xs text-stone-500">JPEG, PNG or WebP · maximum 5 MB</p></div><input v-model="establishmentForm.phone" class="rounded border p-2" placeholder="Phone"><input v-model="establishmentForm.instagram" class="rounded border p-2" placeholder="Instagram"><input v-model="establishmentForm.facebook_url" class="rounded border p-2" placeholder="Facebook URL"><input v-model="establishmentForm.whatsapp" class="rounded border p-2" placeholder="WhatsApp"><input v-model="establishmentForm.website_url" class="rounded border p-2 sm:col-span-2" placeholder="Website"></div>
             <p class="text-xs text-stone-500">Paste latitude, longitude from Google Maps. Leave blank when no coordinates are available.</p>
             <textarea v-model="establishmentForm.hours_notes_en" class="w-full rounded border p-2" placeholder="Opening-hours notes (English)"/><textarea v-model="establishmentForm.hours_notes_es" class="w-full rounded border p-2" placeholder="Opening-hours notes (Spanish)"/>
             <details class="rounded border border-stone-200 p-3"><summary class="cursor-pointer text-sm font-semibold">Descriptions and closure details</summary><div class="mt-3 space-y-3"><textarea v-model="establishmentForm.description_en" class="w-full rounded border p-2" placeholder="English description"/><textarea v-model="establishmentForm.description_es" class="w-full rounded border p-2" placeholder="Spanish description"/><select v-model="establishmentForm.closure_status" class="w-full rounded border p-2"><option value="normal">Normal</option><option value="temporarily_closed">Temporarily closed</option><option value="permanently_closed">Permanently closed</option></select></div></details>
-            <div class="grid gap-3 sm:grid-cols-2"><label class="flex items-center gap-2 text-sm"><input v-model="establishmentForm.is_published" type="checkbox"> Published</label><select v-model="establishmentForm.participation_status" class="rounded border p-2"><option value="active">Active</option><option value="withdrawn">Suspended</option></select></div><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetEstablishment">Clear</button></div>
+            <div class="grid gap-3 sm:grid-cols-2"><label class="flex items-center gap-2 text-sm"><input v-model="establishmentForm.is_published" type="checkbox"> Published</label><select v-model="establishmentForm.participation_status" class="rounded border p-2"><option value="active">Active</option><option value="withdrawn">Suspended</option></select></div><p v-if="!editingEstablishment" class="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">New bars are blocked until a permanent venue can be selected safely.</p><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving || !editingEstablishment">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetEstablishment">Clear</button></div>
           </form></td></tr></template><tr v-if="!filteredEstablishments.length"><td colspan="7" class="p-5 text-center text-stone-500">No bars match this filter.</td></tr></tbody></table></div></div>
           <form class="hidden lg:block scroll-mt-4 space-y-4 rounded-xl border bg-white p-5" @submit.prevent="saveEstablishment">
             <div class="mb-3 flex items-center justify-between gap-3"><h2 class="text-lg font-bold">{{ editingEstablishment ? 'Edit establishment' : 'New establishment' }}</h2><button type="button" class="lg:hidden rounded border px-2 py-1 text-sm font-semibold" @click="closeEstablishmentEditor">Close editor</button></div>
-            <select v-model="establishmentForm.festival_id" class="w-full rounded border p-2" required><option value="" disabled>Festival</option><option v-for="f in festivals" :key="f.id" :value="f.id">{{ f.name_en || f.name_es }}</option></select>
+            <select v-model="establishmentForm.festival_id" class="w-full rounded border p-2" :disabled="Boolean(editingEstablishment)" required><option value="" disabled>Festival</option><option v-for="f in festivals" :key="f.id" :value="f.id">{{ festivalOptionLabel(f) }}</option></select>
             <div class="grid gap-3 sm:grid-cols-2"><input v-model="establishmentForm.name" class="rounded border p-2 sm:col-span-2" placeholder="Name" required><input v-model="establishmentForm.address" class="rounded border p-2 sm:col-span-2" placeholder="Address"><label class="block text-sm font-medium text-stone-700 sm:col-span-2">Google Maps coordinates<input v-model="establishmentForm.coordinates" class="mt-1 w-full rounded border p-2 font-mono text-sm" type="text" inputmode="decimal" placeholder="39.979579659748154, -0.030992736520370705"></label><div class="sm:col-span-2 rounded border border-stone-200 p-3"><p class="text-sm font-semibold">Photo</p><div v-if="establishmentPhotoFeedback.state !== 'idle'" class="mt-2 rounded border p-3 text-sm" :class="establishmentPhotoFeedback.state === 'success' ? 'border-emerald-300 bg-emerald-50 text-emerald-900' : establishmentPhotoFeedback.state === 'error' ? 'border-red-300 bg-red-50 text-red-900' : 'border-stone-200 bg-stone-50 text-stone-700'"><p class="font-semibold">{{ establishmentPhotoFeedback.state === 'success' ? '✓ Photo uploaded successfully' : establishmentPhotoFeedback.state === 'processing' ? 'Compressing and uploading…' : establishmentPhotoFeedback.state === 'error' ? 'Photo upload failed' : 'Photo selected — not uploaded yet' }}</p><p v-if="establishmentPhotoFeedback.originalName" class="mt-1 break-all text-xs">{{ establishmentPhotoFeedback.originalName }}</p><p v-if="establishmentPhotoFeedback.originalBytes" class="text-xs">Original: {{ formatPhotoSize(establishmentPhotoFeedback.originalBytes) }}</p><template v-if="establishmentPhotoFeedback.state === 'success'"><p>Saved: {{ formatPhotoSize(establishmentPhotoFeedback.storedBytes) }} · Reduction: {{ photoReduction(establishmentPhotoFeedback) }}%</p><p class="mt-1 break-all text-xs">Stored: {{ establishmentPhotoFeedback.path }}</p></template><p v-if="establishmentPhotoFeedback.error" class="mt-1 text-xs">{{ establishmentPhotoFeedback.error }}</p></div><div v-if="establishmentPhotoPreview" class="mt-2 flex flex-wrap items-center gap-3"><img :src="establishmentPhotoPreview" alt="Establishment preview" class="h-20 w-20 rounded object-cover"><button type="button" class="rounded border px-3 py-2 text-sm font-semibold" @click="requestEstablishmentPhotoRemoval">Remove photo</button></div><label class="mt-2 inline-flex cursor-pointer rounded border px-3 py-2 text-sm font-semibold"><span>{{ establishmentPhotoPreview ? "Replace photo" : "Choose photo / Upload photo" }}</span><input class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="chooseEstablishmentPhoto"></label><p class="mt-1 text-xs text-stone-500">JPEG, PNG or WebP · maximum 5 MB</p></div><input v-model="establishmentForm.phone" class="rounded border p-2" placeholder="Phone"><input v-model="establishmentForm.instagram" class="rounded border p-2" placeholder="Instagram"><input v-model="establishmentForm.facebook_url" class="rounded border p-2" placeholder="Facebook URL"><input v-model="establishmentForm.whatsapp" class="rounded border p-2" placeholder="WhatsApp"><input v-model="establishmentForm.website_url" class="rounded border p-2 sm:col-span-2" placeholder="Website"></div>
             <p class="text-xs text-stone-500">Paste latitude, longitude from Google Maps. Leave blank when no coordinates are available.</p>
             <textarea v-model="establishmentForm.hours_notes_en" class="w-full rounded border p-2" placeholder="Opening-hours notes (English)"/><textarea v-model="establishmentForm.hours_notes_es" class="w-full rounded border p-2" placeholder="Opening-hours notes (Spanish)"/>
             <details class="rounded border border-stone-200 p-3"><summary class="cursor-pointer text-sm font-semibold">Descriptions and closure details</summary><div class="mt-3 space-y-3"><textarea v-model="establishmentForm.description_en" class="w-full rounded border p-2" placeholder="English description"/><textarea v-model="establishmentForm.description_es" class="w-full rounded border p-2" placeholder="Spanish description"/><select v-model="establishmentForm.closure_status" class="w-full rounded border p-2"><option value="normal">Normal</option><option value="temporarily_closed">Temporarily closed</option><option value="permanently_closed">Permanently closed</option></select></div></details>
-            <div class="grid gap-3 sm:grid-cols-2"><label class="flex items-center gap-2 text-sm"><input v-model="establishmentForm.is_published" type="checkbox"> Published</label><select v-model="establishmentForm.participation_status" class="rounded border p-2"><option value="active">Active</option><option value="withdrawn">Suspended</option></select></div><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetEstablishment">Clear</button></div>
+            <div class="grid gap-3 sm:grid-cols-2"><label class="flex items-center gap-2 text-sm"><input v-model="establishmentForm.is_published" type="checkbox"> Published</label><select v-model="establishmentForm.participation_status" class="rounded border p-2"><option value="active">Active</option><option value="withdrawn">Suspended</option></select></div><p v-if="!editingEstablishment" class="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">New bars are blocked until a permanent venue can be selected safely.</p><div class="flex gap-2"><button class="rounded bg-emerald-700 px-3 py-2 text-white" :disabled="saving || !editingEstablishment">Save</button><button type="button" class="rounded border px-3 py-2" @click="resetEstablishment">Clear</button></div>
           </form>
         </section>
 
