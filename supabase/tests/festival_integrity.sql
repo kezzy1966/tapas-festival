@@ -86,8 +86,9 @@ insert into festival.field_values(field_definition_id,establishment_id,value) va
 update festival.field_definitions set required = true where id = '50000000-0000-0000-0000-000000000002';
 select pg_temp.assert_true((select required from festival.field_definitions where id = '50000000-0000-0000-0000-000000000002'), 'required field can be enabled after published entities are populated');
 select pg_temp.expect_error($q$delete from festival.field_values where id = '60000000-0000-0000-0000-000000000002'$q$, '23514', 'required published value cannot be deleted');
-insert into festival.establishments(id,festival_id,name,address,latitude,longitude) values
-  ('20000000-0000-0000-0000-000000000008','10000000-0000-0000-0000-000000000001','New draft','Test',39.98,-0.04);
+insert into festival.venues(canonical_name) values ('New draft');
+insert into festival.establishments(id,festival_id,venue_id,name,address,latitude,longitude) values
+  ('20000000-0000-0000-0000-000000000008','10000000-0000-0000-0000-000000000001',(select id from festival.venues where canonical_name = 'New draft'),'New draft','Test',39.98,-0.04);
 select pg_temp.expect_error($q$update festival.establishments set is_published = true where id = '20000000-0000-0000-0000-000000000008'$q$, '23514', 'draft may omit required value but publication cannot');
 set constraints all deferred;
 update festival.establishments set is_published = true where id = '20000000-0000-0000-0000-000000000008';

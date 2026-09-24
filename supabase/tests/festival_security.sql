@@ -2,8 +2,8 @@
 begin;
 \ir support/setup.sql
 
-select pg_temp.assert_true((select count(*) = 8 from pg_class c join pg_namespace n on n.oid = c.relnamespace
-  where n.nspname in ('festival', 'festival_private') and c.relkind = 'r' and c.relrowsecurity), 'RLS enabled on all eight tables');
+select pg_temp.assert_true((select count(*) = 9 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname in ('festival', 'festival_private') and c.relkind = 'r' and c.relrowsecurity), 'RLS enabled on all nine tables');
 select pg_temp.assert_true((select bool_and(p.proconfig @> array['search_path=""']) from pg_proc p
   join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'festival_private' and p.prosecdef), 'all definer functions have a fixed empty search path');
 select pg_temp.assert_true(not has_function_privilege('authenticated', 'festival_private.validate_field_graph()', 'EXECUTE')

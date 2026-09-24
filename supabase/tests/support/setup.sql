@@ -34,14 +34,23 @@ insert into festival.festivals(id, slug, name_en, name_es, start_date, end_date,
   ('10000000-0000-0000-0000-000000000003', 'test-archived', 'Archived', null, '2000-01-01', '2000-01-02', 4, 'Castellón', 'archived', true),
   ('10000000-0000-0000-0000-000000000004', 'test-disabled', 'Voting disabled', null, '2100-01-01', '2100-01-02', 7, 'Castellón', 'published', false);
 
-insert into festival.establishments(id, festival_id, name, address, latitude, longitude, is_published, participation_status, closure_status, opening_hours) values
-  ('20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', 'Public venue', 'Test address', 39.98, -0.04, true, 'active', 'normal', '{"1":[],"2":[["12:00","16:00"],["19:00","23:00"]],"6":[["20:00","02:00"]]}'),
-  ('20000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000002', 'Draft festival venue', 'Test address', 39.98, -0.04, true, 'active', 'normal', null),
-  ('20000000-0000-0000-0000-000000000003', '10000000-0000-0000-0000-000000000001', 'Withdrawn venue', 'Test address', 39.98, -0.04, true, 'withdrawn', 'normal', null),
-  ('20000000-0000-0000-0000-000000000004', '10000000-0000-0000-0000-000000000001', 'Closed venue', 'Test address', 39.98, -0.04, true, 'active', 'temporarily_closed', '{"1":[],"2":[],"3":[],"4":[],"5":[],"6":[],"7":[]}'),
-  ('20000000-0000-0000-0000-000000000005', '10000000-0000-0000-0000-000000000001', 'Draft venue', 'Test address', null, null, false, 'active', 'normal', '{}'),
-  ('20000000-0000-0000-0000-000000000006', '10000000-0000-0000-0000-000000000003', 'Archived venue', 'Test address', 39.98, -0.04, true, 'active', 'normal', null),
-  ('20000000-0000-0000-0000-000000000007', '10000000-0000-0000-0000-000000000004', 'Disabled venue', 'Test address', 39.98, -0.04, true, 'active', 'normal', null);
+insert into festival.venues(id, canonical_name) values
+  ('70000000-0000-0000-0000-000000000001', 'Public venue'),
+  ('70000000-0000-0000-0000-000000000002', 'Draft festival venue'),
+  ('70000000-0000-0000-0000-000000000003', 'Withdrawn venue'),
+  ('70000000-0000-0000-0000-000000000004', 'Closed venue'),
+  ('70000000-0000-0000-0000-000000000005', 'Draft venue'),
+  ('70000000-0000-0000-0000-000000000006', 'Archived venue'),
+  ('70000000-0000-0000-0000-000000000007', 'Disabled venue');
+
+insert into festival.establishments(id, festival_id, venue_id, name, address, latitude, longitude, is_published, participation_status, closure_status, opening_hours) values
+  ('20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001', '70000000-0000-0000-0000-000000000001', 'Public venue', 'Test address', 39.98, -0.04, true, 'active', 'normal', '{"1":[],"2":[["12:00","16:00"],["19:00","23:00"]],"6":[["20:00","02:00"]]}'),
+  ('20000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000002', '70000000-0000-0000-0000-000000000002', 'Draft festival venue', 'Test address', 39.98, -0.04, true, 'active', 'normal', null),
+  ('20000000-0000-0000-0000-000000000003', '10000000-0000-0000-0000-000000000001', '70000000-0000-0000-0000-000000000003', 'Withdrawn venue', 'Test address', 39.98, -0.04, true, 'withdrawn', 'normal', null),
+  ('20000000-0000-0000-0000-000000000004', '10000000-0000-0000-0000-000000000001', '70000000-0000-0000-0000-000000000004', 'Closed venue', 'Test address', 39.98, -0.04, true, 'active', 'temporarily_closed', '{"1":[],"2":[],"3":[],"4":[],"5":[],"6":[],"7":[]}'),
+  ('20000000-0000-0000-0000-000000000005', '10000000-0000-0000-0000-000000000001', '70000000-0000-0000-0000-000000000005', 'Draft venue', 'Test address', null, null, false, 'active', 'normal', '{}'),
+  ('20000000-0000-0000-0000-000000000006', '10000000-0000-0000-0000-000000000003', '70000000-0000-0000-0000-000000000006', 'Archived venue', 'Test address', 39.98, -0.04, true, 'active', 'normal', null),
+  ('20000000-0000-0000-0000-000000000007', '10000000-0000-0000-0000-000000000004', '70000000-0000-0000-0000-000000000007', 'Disabled venue', 'Test address', 39.98, -0.04, true, 'active', 'normal', null);
 
 insert into festival.tapas(id, establishment_id, name_en, name_es, is_published, participation_status) values
   ('30000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000001', 'Rated tapa', null, true, 'active'),

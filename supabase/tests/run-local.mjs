@@ -47,7 +47,7 @@ try {
       ('00000000-0000-0000-0000-000000000099', 'existing-private@example.invalid');
   `);
   console.log((await db.query('select version()')).rows[0].version);
-  for (const name of (await readdir(migrationsDir)).filter(n => /^20260911000[123]00_festival_.*\.sql$/.test(n)).sort()) {
+  for (const name of (await readdir(migrationsDir)).filter(n => /^(20260911000[123]00_festival_.*|20260924000100_festival_venues)\.sql$/.test(n)).sort()) {
     await db.exec(await readSql(resolve(migrationsDir, name)));
     console.log(`Applied locally: ${name}`);
   }
@@ -55,7 +55,7 @@ try {
   if (backfill.rows[0]?.display_name !== 'Festival visitor') throw new Error('Existing-user profile backfill failed');
   console.log('PASS: existing Auth account backfilled with a non-email display name');
   let total = 1;
-  for (const name of (await readdir(testsDir)).filter(n => /^festival_.*\.sql$/.test(n)).sort()) {
+  for (const name of (await readdir(testsDir)).filter(n => /^(festival_integrity|festival_ratings|festival_security|festival_venues)\.sql$/.test(n)).sort()) {
     const results = await db.exec(await readSql(resolve(testsDir, name)));
     const checks = results.flatMap(r => r.rows).filter(r => 'assert_true' in r || 'expect_error' in r);
     total += checks.length;
